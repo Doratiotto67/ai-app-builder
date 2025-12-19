@@ -19,11 +19,14 @@ import {
   Sun,
   PanelLeft,
   PanelRight,
+  Download,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 import { getProjectFiles } from '@/lib/api/project-service';
 import { filesLog } from '@/lib/debug/logger';
+import { downloadProjectAsZip } from '@/lib/utils/download-project';
 
 interface IDELayoutProps {
   projectId: string;
@@ -44,9 +47,25 @@ export function IDELayout({ projectId }: IDELayoutProps) {
     currentProject,
     isEditorCollapsed,
     toggleEditorCollapsed,
+    files,
   } = useIDEStore();
 
   const [mounted, setMounted] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+
+  const handleDownloadProject = async () => {
+    if (!currentProject || !files.length) return;
+
+    try {
+      setIsDownloading(true);
+      await downloadProjectAsZip(files, currentProject.name);
+    } catch (error) {
+      console.error('Erro ao baixar projeto:', error);
+      // Aqui idealmente teríamos um toast de erro
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   useEffect(() => {
     setMounted(true);
@@ -160,6 +179,20 @@ export function IDELayout({ projectId }: IDELayoutProps) {
         </div>
 
         <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleDownloadProject}
+            disabled={isDownloading || !currentProject}
+            title="Baixar projeto (.zip)"
+          >
+            {isDownloading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+          </Button>
+
           <Button
             variant="ghost"
             size="icon"
