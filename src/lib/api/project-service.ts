@@ -304,6 +304,59 @@ export async function generatePRD(projectId: string, description: string, contex
   return response.json();
 }
 
+// ============= Code Fixer (AI Agent) =============
+
+export interface FileToFix {
+  path: string;
+  content: string;
+  language: string;
+}
+
+export interface FixedFile {
+  path: string;
+  content: string;
+  language: string;
+  wasFixed: boolean;
+  fixes: string[];
+}
+
+export async function fixCode(files: FileToFix[]): Promise<{ files: FixedFile[]; error?: string }> {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  console.log(`[fixCode] Enviando ${files.length} arquivos para correção via IA`);
+
+  try {
+    const response = await fetch(
+      `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/fix-code`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ files }),
+      }
+    );
+
+    if (!response.ok) {
+      const err = await response.json();
+      console.error('[fixCode] Erro:', err);
+      return { files: files.map(f => ({ ...f, wasFixed: false, fixes: [] })), error: err.error };
+    }
+
+    const result = await response.json();
+    console.log(`[fixCode] Recebido ${result.files?.length || 0} arquivos corrigidos`);
+    return result;
+  } catch (error) {
+    console.error('[fixCode] Erro de rede:', error);
+    return { 
+      files: files.map(f => ({ ...f, wasFixed: false, fixes: [] })), 
+      error: error instanceof Error ? error.message : 'Network error' 
+    };
+  }
+}
+
 // ============= Organizations =============
 
 export async function getOrganizations() {

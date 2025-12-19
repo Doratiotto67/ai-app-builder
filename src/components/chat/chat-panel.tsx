@@ -41,6 +41,7 @@ import { useWebContainer } from '@/lib/webcontainer';
 import { useCodeFixer } from '@/hooks/useCodeFixer';
 import { chatLog, extractLog } from '@/lib/debug/logger';
 import { validateAndCompleteFiles, fixAllFiles, fixJSXSyntax as fixSyntax } from '@/lib/code-validation';
+import { fixCode as fixCodeViaAI } from '@/lib/api/project-service';
 
 interface ChatPanelProps {
   projectId: string;
@@ -384,7 +385,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
   }, []);
 
   // Criar arquivos extraídos - ESCREVE NO STORE E NO WEBCONTAINER
-  // AGORA COM VALIDAÇÃO DE IMPORTS E GERAÇÃO DE STUBS
+  // AGORA COM VALIDAÇÃO DE IMPORTS, GERAÇÃO DE STUBS E CORREÇÃO VIA IA
   const handleCreateFiles = useCallback(async (filesToCreate?: ExtractedFile[]) => {
     const targets = filesToCreate && Array.isArray(filesToCreate) ? filesToCreate : extractedFiles;
     if (targets.length === 0) return;
@@ -392,7 +393,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
     setWritingFiles(true);
     
     try {
-      // ETAPA 1: Corrigir sintaxe de todos os arquivos PRIMEIRO
+      // ETAPA 1: Corrigir sintaxe básica de todos os arquivos PRIMEIRO
       const { files: syntaxFixedFiles, totalFixes, fixesByFile } = fixAllFiles(
         targets.map(f => ({ path: f.path, content: f.content, language: f.language }))
       );
@@ -411,10 +412,42 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
           missing: validation.missingImports.map(m => m.importedName)
         });
       }
+
+      // ETAPA 3: NOVA - Enviar para agente de correção via IA (Gemini 3.0)
+      console.log(`[ChatPanel] 🤖 Enviando ${validatedFiles.length} arquivos para correção via IA...`);
+      let finalFiles = validatedFiles;
+      
+      try {
+        const aiFixResult = await fixCodeViaAI(validatedFiles);
+        
+        if (aiFixResult.files && aiFixResult.files.length > 0) {
+          finalFiles = aiFixResult.files;
+          
+          // Contar correções feitas pela IA
+          const aiFixCount = aiFixResult.files.filter(f => f.wasFixed).length;
+          if (aiFixCount > 0) {
+            console.log(`[ChatPanel] ✨ IA corrigiu ${aiFixCount} arquivos`);
+            aiFixResult.files.forEach(f => {
+              if (f.wasFixed && f.fixes.length > 0) {
+                console.log(`[ChatPanel] 📝 ${f.path}: ${f.fixes.join(', ')}`);
+              }
+            });
+          } else {
+            console.log(`[ChatPanel] ✅ IA não encontrou erros para corrigir`);
+          }
+        }
+        
+        if (aiFixResult.error) {
+          console.warn(`[ChatPanel] ⚠️ Aviso do agente de correção: ${aiFixResult.error}`);
+        }
+      } catch (aiError) {
+        console.warn(`[ChatPanel] ⚠️ Agente de correção indisponível, usando arquivos validados:`, aiError);
+        // Continuar com os arquivos validados se o agente falhar
+      }
       
       const createdFiles: string[] = [];
       
-      for (const file of validatedFiles) {
+      for (const file of finalFiles) {
         // Converter path Next.js → Vite
         const { path: convertedPath, content: convertedContent } = convertToVitePath(file.path, file.content);
         
