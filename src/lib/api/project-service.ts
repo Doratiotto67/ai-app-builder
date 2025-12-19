@@ -307,24 +307,55 @@ export async function generatePRD(projectId: string, description: string, contex
 // ============= Organizations =============
 
 export async function getOrganizations() {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+  
+  // Buscar organizações onde o usuário é owner ou membro
   const { data, error } = await supabase
     .from('orgs')
-    .select('*, org_members!inner(role)')
+    .select('id, name, slug, owner_user_id, created_at, updated_at, org_members(role)')
+    .or(`owner_user_id.eq.${user.id},org_members.user_id.eq.${user.id}`)
     .order('name');
 
-  if (error) throw error;
-  return data;
+  if (error) {
+    console.error('[API] Erro ao buscar organizações:', error);
+    // Tentar buscar apenas orgs onde o usuário é owner
+    const { data: ownedOrgs, error: ownedError } = await supabase
+      .from('orgs')
+      .select('*')
+      .eq('owner_user_id', user.id)
+      .order('name');
+    
+    if (ownedError) throw ownedError;
+    return ownedOrgs || [];
+  }
+  
+  return data || [];
 }
 
+
 export async function createOrganization(name: string) {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('Not authenticated');
+  console.log('[API] createOrganization iniciado:', name);
+  
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  if (userError) {
+    console.error('[API] Erro ao obter usuário:', userError);
+    throw new Error(`Erro de autenticação: ${userError.message}`);
+  }
+  if (!user) {
+    console.error('[API] Usuário não encontrado');
+    throw new Error('Usuário não autenticado');
+  }
+  
+  console.log('[API] Usuário autenticado:', user.id, user.email);
 
   const slug = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '') + '-' + Math.random().toString(36).substring(2, 8);
 
+  console.log('[API] Inserindo org com slug:', slug);
+  
   const { data: org, error: orgError } = await supabase
     .from('orgs')
     .insert({
@@ -335,8 +366,14 @@ export async function createOrganization(name: string) {
     .select()
     .single();
 
-  if (orgError) throw orgError;
+  if (orgError) {
+    console.error('[API] Erro ao criar org:', JSON.stringify(orgError, null, 2));
+    throw new Error(`Erro ao criar organização: ${orgError.message || orgError.code || 'RLS policy violation'}`);
+  }
+  
+  console.log('[API] Org criada:', org.id);
 
+  console.log('[API] Inserindo membro owner...');
   const { error: memberError } = await supabase
     .from('org_members')
     .insert({
@@ -345,10 +382,15 @@ export async function createOrganization(name: string) {
       role: 'owner',
     });
 
-  if (memberError) throw memberError;
-
+  if (memberError) {
+    console.error('[API] Erro ao inserir membro:', JSON.stringify(memberError, null, 2));
+    throw new Error(`Erro ao adicionar membro: ${memberError.message || memberError.code || 'RLS policy violation'}`);
+  }
+  
+  console.log('[API] Membro adicionado com sucesso');
   return org;
 }
+
 
 // ============= Real-time Subscriptions =============
 

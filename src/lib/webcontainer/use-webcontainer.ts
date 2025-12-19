@@ -78,10 +78,9 @@ function transformFileForVite(path: string, content: string): { path: string, co
   // O Vite se confunde se houver múltiplos Apps. Vamos unificar tudo para src/App.tsx
   if (transformedPath.match(/^\/?(app\/page|src\/App|App)\.(tsx|jsx|js|ts)$/)) {
     transformedPath = 'src/App.tsx';
-    // Garantir que o componente se chame App para o main.tsx funcionar
+    // CRÍTICO: NÃO modificar exports - isso quebrava o código JSX antes!
+    // Apenas remover 'use client'
     transformedContent = transformedContent
-      .replace(/export default function \w+/g, 'export default function App')
-      .replace(/export default \w+/g, 'export default App')
       .replace(/'use client';?\s*\n?/g, '')
       .replace(/"use client";?\s*\n?/g, '');
   }

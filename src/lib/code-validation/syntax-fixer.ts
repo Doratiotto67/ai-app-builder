@@ -64,77 +64,37 @@ export function fixJSXSyntax(code: string, filename: string): SyntaxFixResult {
   fixed = fixed.replace(/\{\/\*\s*\.\.\.\s*\*\/\}/g, '');
   fixed = fixed.replace(/\{\s*\/\*\s*conteúdo\s*\*\/\s*\}/g, '');
 
-  // 8. Verificar e adicionar export default se não existir
+  // 8. Verificar export default - NÃO ADICIONAR AUTOMATICAMENTE
+  // A adição automática estava quebrando código ao inserir no lugar errado
+  // Apenas verificar se existe, mas NÃO modificar
   const hasExportDefault = /export\s+default\s+(function|class|const|\w+)/.test(fixed);
-  const hasNamedExport = /export\s+(function|const|class)\s+\w+/.test(fixed);
   
+  // DESABILITADO: A adição automática de export default causava mais problemas do que resolvia
+  // O prompt da IA já instrui a gerar exports corretos
+  // Se não tiver export default, deixar como está - o erro será mais claro para debugar
   if (!hasExportDefault) {
-    // Encontrar o nome do componente
+    // Apenas logar, não modificar
     const funcMatch = fixed.match(/(?:export\s+)?function\s+(\w+)/);
     const constMatch = fixed.match(/(?:export\s+)?const\s+(\w+)\s*[:=]/);
     const componentName = funcMatch?.[1] || constMatch?.[1];
-    
     if (componentName) {
-      // Se já tem export function, adicionar export default no final
-      if (hasNamedExport) {
-        if (!fixed.includes(`export default ${componentName}`)) {
-          fixed = fixed.trimEnd() + `\n\nexport default ${componentName};\n`;
-          fixes.push(`Adicionado export default ${componentName}`);
-        }
-      } else {
-        // Adicionar export na função
-        fixed = fixed.replace(
-          new RegExp(`function\\s+${componentName}`),
-          `export default function ${componentName}`
-        );
-        fixes.push(`Adicionado export default function ${componentName}`);
-      }
+      console.warn(`[SyntaxFixer] Componente ${componentName} sem export default - deixando como está`);
     }
   }
 
-  // 9. Corrigir tags de abertura sem fechamento correspondente
-  // Verificar balanceamento de TODAS as tags HTML comuns (não só div)
-  const commonTags = ['div', 'section', 'header', 'footer', 'main', 'nav', 'article', 'aside', 'span', 'p', 'ul', 'ol', 'li', 'button', 'form', 'table', 'thead', 'tbody', 'tr', 'td', 'th'];
-  
-  commonTags.forEach(tag => {
-    const openRegex = new RegExp(`<${tag}(?:\\s|>)`, 'gi');
-    const closeRegex = new RegExp(`</${tag}>`, 'gi');
-    const openCount = (fixed.match(openRegex) || []).length;
-    const closeCount = (fixed.match(closeRegex) || []).length;
-    
-    if (openCount > closeCount) {
-      const missing = openCount - closeCount;
-      // Adicionar as tags de fechamento antes do último fechamento ou no final
-      fixed = fixed.trimEnd() + '\n' + `</${tag}>\n`.repeat(missing);
-      fixes.push(`Adicionadas ${missing} tags </${tag}> faltantes`);
-    }
-  });
+  // 9. Balanceamento de tags HTML - DESABILITADO
+  // Essa correção automática estava adicionando tags no final do código
+  // de forma cega, corrompendo a estrutura JSX
+  // const commonTags = ['div', 'section', 'header', 'footer', ...];
+  // DESABILITADO: muito destrutivo
 
+  // 10. Balanceamento de chaves { } - DESABILITADO
+  // Essa correção estava adicionando } no final sem saber onde pertence
+  // DESABILITADO: muito destrutivo
 
-  // 10. Verificar balanceamento de chaves { }
-  const openBraces = (fixed.match(/\{/g) || []).length;
-  const closeBraces = (fixed.match(/\}/g) || []).length;
-  
-  if (openBraces > closeBraces) {
-    const missing = openBraces - closeBraces;
-    // Adicionar fechamentos antes do final
-    const lastReturn = fixed.lastIndexOf('return');
-    if (lastReturn > -1) {
-      // Encontrar o final da função e adicionar }
-      fixed = fixed.trimEnd() + '\n' + '}\n'.repeat(missing);
-      fixes.push(`Adicionadas ${missing} chaves } faltantes`);
-    }
-  }
-
-  // 11. Verificar balanceamento de parênteses ( )
-  const openParens = (fixed.match(/\(/g) || []).length;
-  const closeParens = (fixed.match(/\)/g) || []).length;
-  
-  if (openParens > closeParens) {
-    const missing = openParens - closeParens;
-    fixed = fixed.trimEnd() + ')'.repeat(missing) + ';\n';
-    fixes.push(`Adicionados ${missing} parênteses ) faltantes`);
-  }
+  // 11. Balanceamento de parênteses ( ) - DESABILITADO
+  // Essa correção estava adicionando ) no final sem saber onde pertence
+  // DESABILITADO: muito destrutivo
 
   // 12. Corrigir JSX com texto solto (comum quando IA trunca)
   // Remover linhas que são apenas texto solto sem tags
@@ -155,41 +115,14 @@ export function fixJSXSyntax(code: string, filename: string): SyntaxFixResult {
     fixed += '\n';
   }
 
-  // 15. Detectar código truncado no return - estrutura JSX incompleta
-  // Verificar se há um return ( sem o ) correspondente no final
-  const returnMatch = fixed.match(/return\s*\(\s*([\s\S]*?)$/);
-  if (returnMatch) {
-    const jsxContent = returnMatch[1];
-    // Se o JSX não termina com ); ou ) seguido de }, provavelmente está truncado
-    const endsCorrectly = /\)\s*;?\s*\}?\s*$/.test(fixed.trim());
-    if (!endsCorrectly) {
-      // Verificar qual tag raiz foi aberta para fechar corretamente
-      const rootTagMatch = jsxContent.match(/^\s*<(\w+)/);
-      if (rootTagMatch) {
-        const rootTag = rootTagMatch[1];
-        // Verificar se a tag raiz está fechada
-        const rootCloseRegex = new RegExp(`</${rootTag}>\\s*$`);
-        if (!rootCloseRegex.test(jsxContent.trim())) {
-          fixed = fixed.trimEnd() + `\n    </${rootTag}>\n  );\n}\n`;
-          fixes.push(`Adicionado fechamento para raiz <${rootTag}> e estrutura de função`);
-        }
-      }
-    }
-  }
+  // 15. Detectar código truncado - DESABILITADO
+  // Essa correção estava tentando "completar" código truncado
+  // mas acabava inserindo fechamentos no lugar errado
+  // DESABILITADO: muito destrutivo
 
-  // 16. Garantir estrutura mínima de componente React
-  // Se tem export default function mas não tem return nem JSX, adicionar placeholder
-  if (/export\s+default\s+function\s+\w+/.test(fixed) && !fixed.includes('return')) {
-    const funcNameMatch = fixed.match(/export\s+default\s+function\s+(\w+)/);
-    if (funcNameMatch) {
-      // Encontrar onde a função termina e adicionar um return básico
-      fixed = fixed.replace(
-        /export\s+default\s+function\s+(\w+)\s*\([^)]*\)\s*\{/,
-        `export default function $1() {\n  return (\n    <div className="p-4">Carregando...</div>\n  );\n`
-      );
-      fixes.push('Adicionado return placeholder para componente vazio');
-    }
-  }
+  // 16. Garantir estrutura mínima - DESABILITADO
+  // Adicionar placeholder para componente vazio causava mais problemas
+  // DESABILITADO: muito destrutivo
 
   return {
     code: fixed,

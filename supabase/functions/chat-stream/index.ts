@@ -135,9 +135,65 @@ Use design moderno e profissional:
    📄 src/components/layout/Footer.tsx
    📄 src/components/features/HeroSection.tsx
    📄 src/components/features/FeaturesSection.tsx
+   📄 src/pages/Home.tsx
+   📄 src/pages/About.tsx
+   📄 src/pages/Pricing.tsx
    📄 src/App.tsx
 
 2. **Gere CADA arquivo completo** com código funcional
+
+## 🧭 NAVEGAÇÃO COM ROTAS REAIS (OBRIGATÓRIO!)
+
+Use react-router-dom para criar navegação REAL entre páginas:
+
+1. **No App.tsx**: use Routes e Route para definir páginas
+2. **No Header/Navbar**: use Link em vez de tags anchor
+3. **Crie páginas separadas**: Home, About, Features, Pricing, Contact
+
+Exemplo de App.tsx com rotas:
+\`\`\`tsx
+// src/App.tsx
+import { Routes, Route } from 'react-router-dom';
+import Header from './components/layout/Header';
+import Footer from './components/layout/Footer';
+import Home from './pages/Home';
+import About from './pages/About';
+import Pricing from './pages/Pricing';
+
+export default function App() {
+  return (
+    <div className="min-h-screen flex flex-col">
+      <Header />
+      <main className="flex-1">
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/about" element={<About />} />
+          <Route path="/pricing" element={<Pricing />} />
+        </Routes>
+      </main>
+      <Footer />
+    </div>
+  );
+}
+\`\`\`
+
+Exemplo de Header com navegação real:
+\`\`\`tsx
+// src/components/layout/Header.tsx
+import { Link } from 'react-router-dom';
+
+export default function Header() {
+  return (
+    <header className="...">
+      <nav>
+        <Link to="/">Home</Link>
+        <Link to="/about">Sobre</Link>
+        <Link to="/pricing">Preços</Link>
+      </nav>
+    </header>
+  );
+}
+\`\`\`
 
 ## ❌ PROIBIÇÕES ABSOLUTAS
 
@@ -146,6 +202,7 @@ Use design moderno e profissional:
 - NUNCA crie imports sem gerar o arquivo correspondente
 - NUNCA use nomes genéricos (file-123.js, Component1.tsx)
 - NUNCA use Next.js imports (next/head, next/link, next/image)
+- NUNCA use âncoras (#features, #pricing) para navegação - use rotas reais!
 
 ## ✅ EXPORTS
 
@@ -166,7 +223,7 @@ Todo componente DEVE ter:
         'X-Title': 'AI App Builder',
       },
       body: JSON.stringify({
-        model: 'z-ai/glm-4.6',
+        model: 'google/gemini-3-flash-preview',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: message },

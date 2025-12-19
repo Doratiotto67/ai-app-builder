@@ -90,11 +90,14 @@ function extractFilesFromContent(content: string): ExtractedFile[] {
     
     // 1. Tentar detectar na primeira linha do código
     const firstLine = code.split('\n')[0];
+    console.log(`[extractFilesFromContent] Primeira linha: "${firstLine.substring(0, 80)}..."`);
+    
     for (const pattern of FILENAME_PATTERNS) {
       const filenameMatch = firstLine.match(pattern);
       if (filenameMatch) {
         filename = filenameMatch[1];
         code = code.split('\n').slice(1).join('\n').trim();
+        console.log(`[extractFilesFromContent] Arquivo detectado via padrão: ${filename}`);
         break;
       }
     }
@@ -142,10 +145,21 @@ function extractFilesFromContent(content: string): ExtractedFile[] {
       } else if (language === 'css') {
         filename = 'src/index.css';
       } else if (['tsx', 'jsx', 'javascript', 'typescript'].includes(language)) {
-        if (code.includes('export default function')) {
-           filename = 'src/App.jsx';
+        // Tentar extrair nome da função para evitar colisões
+        const funcMatch = code.match(/export\s+default\s+function\s+(\w+)/);
+        const funcName = funcMatch?.[1];
+        
+        if (funcName) {
+          // Usar o nome da função para determinar o arquivo
+          if (['App', 'Page', 'Home', 'Index', 'Landing'].includes(funcName)) {
+            filename = 'src/App.tsx';
+          } else {
+            // Componentes vão para a pasta components
+            filename = `src/components/${funcName}.tsx`;
+          }
         } else {
-           filename = `src/components/Component-${Math.floor(Math.random() * 1000)}.${language === 'tsx' || language === 'typescript' ? 'tsx' : 'jsx'}`;
+          // Sem nome de função, gerar nome único
+          filename = `src/components/Component-${Math.floor(Math.random() * 10000)}.${language === 'tsx' || language === 'typescript' ? 'tsx' : 'jsx'}`;
         }
       } else {
         filename = `file-${Math.floor(Math.random() * 1000)}.${language === 'text' ? 'txt' : language}`;
@@ -309,9 +323,9 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       const isTs = filePath.endsWith('.tsx') || filePath.endsWith('.ts') || content.includes('interface ') || content.includes('type ');
       convertedPath = isTs ? 'src/App.tsx' : 'src/App.jsx';
       
-      // Converter export default function Page/Home para App
+      // CRÍTICO: NÃO modificar exports - isso quebrava o código JSX antes!
+      // Apenas remover 'use client'
       convertedContent = convertedContent
-        .replace(/export default function \w+/g, 'export default function App')
         .replace(/'use client';\s*\n?/g, '')
         .replace(/"use client";\s*\n?/g, '');
     }
@@ -322,8 +336,8 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       const ext = filePath.endsWith('.tsx') ? 'tsx' : 'jsx';
       convertedPath = `src/pages/${capitalizedName}.${ext}`;
       
+      // CRÍTICO: NÃO modificar exports - apenas remover 'use client'
       convertedContent = convertedContent
-        .replace(/export default function \w+/g, `export default function ${capitalizedName}`)
         .replace(/'use client';\s*\n?/g, '')
         .replace(/"use client";\s*\n?/g, '');
     }
