@@ -1,0 +1,21 @@
+project_id = "jlubbyhdqizntztketlt"
+
+[api]
+port = 54321
+external_url = "http://localhost:54321"
+
+[db]
+port = 54322
+shadow_port = 54320
+
+[storage]
+enabled = true
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["https://app-builder-supabase.vercel.app/*"]
+
+[edge_runtime]
+enabled = true
+policy = "permissive"
