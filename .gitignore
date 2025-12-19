@@ -38,10 +38,15 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# environment variables
+# environment variables - NUNCA COMMITAR!
 .env
+.env.*
 .env.local
+.env.development
 .env.development.local
+.env.test
 .env.test.local
+.env.production
 .env.production.local
-.env*.local
+*.env
+*.env.local
