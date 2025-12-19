@@ -24,8 +24,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-import { getProjectFiles } from '@/lib/api/project-service';
-import { filesLog } from '@/lib/debug/logger';
+import { getProjectFiles, getProject } from '@/lib/api/project-service';
+import { filesLog, storeLog } from '@/lib/debug/logger';
 import { downloadProjectAsZip } from '@/lib/utils/download-project';
 
 interface IDELayoutProps {
@@ -45,6 +45,7 @@ export function IDELayout({ projectId }: IDELayoutProps) {
     theme,
     setTheme,
     currentProject,
+    setCurrentProject,
     isEditorCollapsed,
     toggleEditorCollapsed,
     files,
@@ -80,10 +81,22 @@ export function IDELayout({ projectId }: IDELayoutProps) {
       
       // 1. Verificar se é uma troca de projeto
       // Se currentProject é nulo ou tem ID diferente, precisamos limpar/preparar
-      if (currentStore.currentProject?.id !== projectId) {
-        filesLog.info('🧹 Preparando ambiente para novo projeto', { newId: projectId });
-        // A limpeza já é feita no setCurrentProject, mas podemos reforçar aqui ou carregar o projeto
-        // idealmente deveríamos carregar os detalhes do projeto aqui também se currentProject for null
+      // 1. Verificar se precisamos carregar os DADOS do projeto
+      // Se currentProject é nulo ou tem ID diferente, precisamos buscar os dados
+      if (!currentStore.currentProject || currentStore.currentProject.id !== projectId) {
+        filesLog.info('🧹 Preparando ambiente e buscando projeto', { newId: projectId });
+        
+        try {
+          const projectData = await getProject(projectId);
+          if (projectData) {
+            useIDEStore.getState().setCurrentProject(projectData);
+            storeLog.success('✅ Dados do projeto carregados', { name: projectData.name });
+          } else {
+             storeLog.error('❌ Projeto não encontrado no banco', { projectId });
+          }
+        } catch (err) {
+           storeLog.error('❌ Erro ao buscar detalhes do projeto', err);
+        }
       }
 
       // 2. Carregar arquivos do Supabase
