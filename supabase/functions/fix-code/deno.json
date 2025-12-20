@@ -1,0 +1,23 @@
+{
+    "compilerOptions": {
+        "strict": true,
+        "lib": [
+            "esnext",
+            "dom",
+            "dom.iterable",
+            "deno.ns"
+        ]
+    },
+    "imports": {
+        "@supabase/supabase-js": "jsr:@supabase/supabase-js@2",
+        "@supabase/functions-js/edge-runtime.d.ts": "jsr:@supabase/functions-js/edge-runtime.d.ts",
+        "std/": "jsr:@std/"
+    },
+    "lint": {
+        "rules": {
+            "exclude": [
+                "no-external-import"
+            ]
+        }
+    }
+}
