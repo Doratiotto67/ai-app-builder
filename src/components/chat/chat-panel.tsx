@@ -306,12 +306,25 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
     }
   };
 
-  // Auto-scroll to bottom when messages change
-  useEffect(() => {
+  // Ref to track if we should auto-scroll
+  const shouldAutoScrollRef = useRef(true);
+
+  // Update auto-scroll preference when user scrolls
+  const handleScroll = () => {
     if (scrollContainerRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+      // If user is within 100px of the bottom, enable auto-scroll
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+      shouldAutoScrollRef.current = isNearBottom;
+    }
+  };
+
+  // Auto-scroll to bottom when messages change, but only if user hasn't scrolled up
+  useEffect(() => {
+    if (scrollContainerRef.current && shouldAutoScrollRef.current) {
       scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
     }
-  }, [messages, streamingContent]);
+  }, [messages, streamingContent, thinkingSteps]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -971,6 +984,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       {/* Messages - SCROLL CORRIGIDO */}
       <div 
         ref={scrollContainerRef}
+        onScroll={handleScroll}
         className="flex-1 overflow-y-auto p-4 space-y-4"
         style={{ overflowY: 'auto', maxHeight: 'calc(100% - 12rem)' }}
       >

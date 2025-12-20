@@ -1,5 +1,5 @@
-import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "jsr:@supabase/supabase-js@2";
+import "@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "@supabase/supabase-js";
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 
@@ -15,16 +15,27 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) {
+      console.error('Missing Authorization header');
+      return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_ANON_KEY')!,
-      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
+      { global: { headers: { Authorization: authHeader } } }
     );
 
     // Validate user
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      console.error('Auth error:', authError);
+      return new Response(JSON.stringify({ error: 'Unauthorized', details: authError?.message }), {
         status: 401,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -47,9 +58,52 @@ Deno.serve(async (req) => {
       });
     }
 
-    const systemPrompt = `# Você é um Engenheiro de Software Full-Stack Sênior
+    // 1. Buscar arquivos existentes do projeto
+    const { data: existingFiles } = await supabase
+      .from('project_files')
+      .select('path, content')
+      .eq('project_id', projectId);
 
-Você cria aplicações web profissionais usando **React + Vite + TypeScript + Tailwind CSS**.
+    const filePaths = existingFiles?.map(f => f.path) || [];
+    const appTsxContent = existingFiles?.find(f => f.path.includes('src/App.tsx') || f.path.includes('src/App.jsx'))?.content;
+    const isNewProject = filePaths.length === 0;
+
+    // Contexto do projeto para o LLM
+    const projectContext = `
+## 📂 CONTEXTO DO PROJETO ATUAL
+
+Arquivos existentes (${filePaths.length}):
+${filePaths.slice(0, 50).map(p => `- ${p}`).join('\n')}
+${filePaths.length > 50 ? `... e mais ${filePaths.length - 50} arquivos` : ''}
+
+${appTsxContent ? `
+### Conteúdo atual do src/App.tsx (PARA REFERÊNCIA DE ROTAS):
+\`\`\`tsx
+${appTsxContent}
+\`\`\`
+` : ''}
+`;
+
+    const systemPrompt = `# Você é um Engenheiro de Software Full-Stack Sênior (Especialista em React + Vite)
+
+Você cria aplicações web profissionais e modernar.
+
+## 🧠 MODO DE OPERAÇÃO: ${isNewProject ? 'NOVO PROJETO (GREENFIELD)' : 'ATUALIZAÇÃO INCREMENTAL (BROWNFIELD)'}
+
+${isNewProject ? `
+### 🟢 MODO CRIATIVO (ZERO-TO-ONE)
+- Crie toda a estrutura do zero.
+- Gere todos os arquivos base (App, main, index.css).
+` : `
+### 🟠 MODO DE MANUTENÇÃO (INCREMENTAL)
+- **VOCÊ ESTÁ TRABALHANDO EM UM PROJETO EXISTENTE!**
+- **NUNCA APAGUE** arquivos existentes a menos que seja explicitamente solicitado.
+- **NUNCA REESCREVA** o projeto do zero.
+- Ao criar uma nova página/feature:
+  1. Crie os novos componentes em \`src/pages/\` e \`src/components/\`.
+  2. **ATUALIZE O App.tsx** importando as novas páginas e ADICIONANDO as novas rotas.
+  3. **MANTENHA** as rotas antigas intactas no App.tsx.
+`}
 
 ## ⚠️ REGRA CRÍTICA: CÓDIGO SEMPRE COMPLETO!
 
@@ -224,7 +278,12 @@ Todo componente DEVE ter:
 
     // Build user message content - supports text + images for vision models
     type MessageContent = string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>;
-    let userMessageContent: MessageContent = message;
+    const userContentText = message;
+    
+    // Inject project context into user message
+    const finalUserMessageText = `${userContentText}\n\n${projectContext}`;
+
+    let userMessageContent: MessageContent = finalUserMessageText;
 
     // If images are provided, format as multimodal content
     if (images && Array.isArray(images) && images.length > 0) {
@@ -240,8 +299,8 @@ Todo componente DEVE ter:
         }
       }
 
-      // Add text message
-      contentParts.push({ type: 'text', text: message });
+      // Add text message with context
+      contentParts.push({ type: 'text', text: finalUserMessageText });
       userMessageContent = contentParts;
     }
 
