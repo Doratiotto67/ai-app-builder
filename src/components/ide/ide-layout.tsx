@@ -21,7 +21,9 @@ import {
   PanelRight,
   Download,
   Loader2,
+  ArrowLeft,
 } from 'lucide-react';
+import Link from 'next/link';
 import { cn } from '@/lib/utils';
 
 import { getProjectFiles, getProject } from '@/lib/api/project-service';
@@ -131,14 +133,36 @@ export function IDELayout({ projectId }: IDELayoutProps) {
               }
             }
 
-            // CORREÇÃO DE LINKS QUEBRADOS (Auto-fix para erro de regex anterior)
-            // Se tem react-router-dom e tem </a> fechando <Link> (sintoma: tem Link e tem </a>)
-            if ((content.includes("'react-router-dom'") || content.includes('"react-router-dom"')) && 
-                content.includes('<Link') && content.includes('</a>')) {
-               filesLog.warn(`🔧 Corrigindo Links quebrados (</a> -> </Link>) em: ${f.path}`);
-               // Substituir todos os </a> por </Link>. Pode ser agressivo, mas salva o app quebrado.
-               const fixedContent = content.replace(/<\/a>/g, '</Link>');
-               sanitizedFile = { ...sanitizedFile, content_text: fixedContent };
+            // CORREÇÃO COMPLETA DE LINKS para Vite
+            // Vite não suporta <Link> de Next.js, convertemos para <a>
+            if (!content.includes("'react-router-dom'") && !content.includes('"react-router-dom"')) {
+              let fixedContent = content;
+              
+              // 1. Convert ALL <Link ...> opening tags to <a ...>
+              if (content.includes('<Link')) {
+                filesLog.warn(`🔧 Corrigindo <Link> para <a> em: ${f.path}`);
+                // Handle <Link href="..."> patterns
+                fixedContent = fixedContent.replace(
+                  /<Link\s+([^>]*?)href\s*=\s*({?"?'?[^"'>}]+['"}]?)([^>]*)>/g,
+                  '<a $1href=$2$3>'
+                );
+                // Handle <Link to="..."> patterns
+                fixedContent = fixedContent.replace(
+                  /<Link\s+([^>]*?)to\s*=\s*({?"?'?[^"'>}]+['"}]?)([^>]*)>/g,
+                  '<a $1href=$2$3>'
+                );
+                // Fallback: any remaining <Link ...>
+                fixedContent = fixedContent.replace(/<Link\s+/g, '<a ');
+              }
+              
+              // 2. Convert ALL </Link> closing tags to </a>
+              if (content.includes('</Link>')) {
+                fixedContent = fixedContent.replace(/<\/Link>/g, '</a>');
+              }
+              
+              if (fixedContent !== content) {
+                sanitizedFile = { ...sanitizedFile, content_text: fixedContent };
+              }
             }
 
             return sanitizedFile;
@@ -177,26 +201,45 @@ export function IDELayout({ projectId }: IDELayoutProps) {
   ];
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-background text-foreground overflow-hidden">
-      {/* Top Bar */}
-      <header className="h-12 border-b bg-card flex items-center justify-between px-4 shrink-0">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <div className="h-6 w-6 rounded bg-gradient-to-br from-violet-500 to-fuchsia-500" />
-            <span className="font-semibold text-sm">AI App Builder</span>
+    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 overflow-hidden font-sans selection:bg-violet-500/30">
+      {/* Header */}
+      <header className="h-12 border-b border-zinc-800 flex items-center justify-between px-4 shrink-0 bg-zinc-950/50 backdrop-blur-xl">
+        <div className="flex items-center gap-3">
+          {/* Botão Voltar para Projetos */}
+          <Link href="/projects">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50 rounded-lg"
+              title="Voltar para projetos"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          </Link>
+          
+          <div className="h-5 w-px bg-zinc-700/50" />
+          
+          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-violet-500/20">
+            <Blocks className="h-5 w-5 text-white" />
           </div>
-          <Separator orientation="vertical" className="h-6" />
-          <span className="text-sm text-muted-foreground">
-            {currentProject?.name || 'Projeto'}
-          </span>
+          <div className="flex flex-col">
+            <span className="text-sm font-semibold tracking-tight">AI App Builder</span>
+            {currentProject && (
+              <span className="text-[10px] text-zinc-400 font-medium">
+                {currentProject.name}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Download Project */}
           <Button
             variant="ghost"
-            size="icon"
+            size="sm"
             onClick={handleDownloadProject}
-            disabled={isDownloading || !currentProject}
+            disabled={!files.length || isDownloading}
+            className="h-8 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50 gap-2"
             title="Baixar projeto (.zip)"
           >
             {isDownloading ? (
@@ -204,12 +247,16 @@ export function IDELayout({ projectId }: IDELayoutProps) {
             ) : (
               <Download className="h-4 w-4" />
             )}
+            <span className="text-xs">Exportar</span>
           </Button>
+
+          <div className="h-4 w-px bg-zinc-800 mx-1" />
 
           <Button
             variant="ghost"
             size="icon"
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            className="h-8 w-8 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50"
           >
             {theme === 'dark' ? (
               <Sun className="h-4 w-4" />
@@ -217,7 +264,7 @@ export function IDELayout({ projectId }: IDELayoutProps) {
               <Moon className="h-4 w-4" />
             )}
           </Button>
-          <Button variant="ghost" size="icon">
+          <Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50">
             <Settings className="h-4 w-4" />
           </Button>
         </div>
@@ -226,27 +273,33 @@ export function IDELayout({ projectId }: IDELayoutProps) {
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Activity Bar */}
-        <aside className="w-12 border-r bg-card flex flex-col items-center py-2 shrink-0">
+        <aside className="w-14 border-r border-zinc-800 bg-zinc-900/50 backdrop-blur-sm flex flex-col items-center py-4 shrink-0 gap-2 z-20">
           {sidebarItems.map((item) => (
-            <Button
-              key={item.id}
-              variant="ghost"
-              size="icon"
-              className={cn(
-                'w-10 h-10 mb-1',
-                activePanel === item.id && 'bg-accent'
+            <div key={item.id} className="relative group">
+              {activePanel === item.id && (
+                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-violet-500 rounded-r-full" />
               )}
-              onClick={() => {
-                if (activePanel === item.id) {
-                  setSidebarOpen(!sidebarOpen);
-                } else {
-                  setActivePanel(item.id);
-                  setSidebarOpen(true);
-                }
-              }}
-            >
-              <item.icon className="h-5 w-5" />
-            </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  'w-10 h-10 rounded-xl transition-all duration-200',
+                  activePanel === item.id 
+                    ? 'text-violet-400 bg-violet-500/10' 
+                    : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800'
+                )}
+                onClick={() => {
+                  if (activePanel === item.id) {
+                    setSidebarOpen(!sidebarOpen);
+                  } else {
+                    setActivePanel(item.id);
+                    setSidebarOpen(true);
+                  }
+                }}
+              >
+                <item.icon className="h-5 w-5" />
+              </Button>
+            </div>
           ))}
 
           <div className="flex-1" />
@@ -254,7 +307,12 @@ export function IDELayout({ projectId }: IDELayoutProps) {
           <Button
             variant="ghost"
             size="icon"
-            className={cn('w-10 h-10 mb-1', chatPanelOpen && 'bg-accent')}
+            className={cn(
+              'w-10 h-10 rounded-xl mb-1 transition-all', 
+              chatPanelOpen 
+                ? 'text-violet-400 bg-violet-500/10' 
+                : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800'
+            )}
             onClick={() => setChatPanelOpen(!chatPanelOpen)}
           >
             <MessageSquare className="h-5 w-5" />
@@ -263,7 +321,12 @@ export function IDELayout({ projectId }: IDELayoutProps) {
           <Button
             variant="ghost"
             size="icon"
-            className={cn('w-10 h-10 mb-1', terminalOpen && 'bg-accent')}
+            className={cn(
+              'w-10 h-10 rounded-xl mb-1 transition-all', 
+              terminalOpen 
+                ? 'text-violet-400 bg-violet-500/10' 
+                : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800'
+            )}
             onClick={() => setTerminalOpen(!terminalOpen)}
           >
             <TerminalIcon className="h-5 w-5" />
@@ -272,38 +335,41 @@ export function IDELayout({ projectId }: IDELayoutProps) {
 
         {/* Sidebar Panel */}
         {sidebarOpen && (
-          <aside className="w-64 border-r bg-card shrink-0">
-            <div className="h-10 flex items-center justify-between px-4 border-b">
-              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          <aside className="w-64 border-r border-zinc-800 bg-zinc-950/30 backdrop-blur-sm shrink-0 flex flex-col">
+            <div className="h-10 flex items-center justify-between px-4 border-b border-zinc-800/50 bg-zinc-900/20">
+              <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
                 {activePanel === 'files' && 'Explorador'}
                 {activePanel === 'search' && 'Buscar'}
-                {activePanel === 'git' && 'Controle de Versão'}
-                {activePanel === 'extensions' && 'Extensões'}
+                {activePanel === 'git' && 'Source Control'}
+                {activePanel === 'extensions' && 'Extensions'}
               </span>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-6 w-6"
+                className="h-6 w-6 text-zinc-500 hover:text-zinc-200"
                 onClick={() => setSidebarOpen(false)}
               >
-                <PanelLeft className="h-4 w-4" />
+                <PanelLeft className="h-3.5 w-3.5" />
               </Button>
             </div>
-            <div className="h-[calc(100%-2.5rem)] overflow-auto">
+            <div className="flex-1 overflow-auto p-2">
               {activePanel === 'files' && <FileExplorer />}
               {activePanel === 'search' && (
-                <div className="p-4 text-sm text-muted-foreground">
-                  Busca em breve...
+                <div className="flex flex-col items-center justify-center h-40 text-center p-4">
+                  <Search className="h-8 w-8 text-zinc-700 mb-2" />
+                  <p className="text-sm text-zinc-500">Busca global em breve</p>
                 </div>
               )}
               {activePanel === 'git' && (
-                <div className="p-4 text-sm text-muted-foreground">
-                  Git em breve...
+                <div className="flex flex-col items-center justify-center h-40 text-center p-4">
+                  <GitBranch className="h-8 w-8 text-zinc-700 mb-2" />
+                  <p className="text-sm text-zinc-500">Git integration em breve</p>
                 </div>
               )}
               {activePanel === 'extensions' && (
-                <div className="p-4 text-sm text-muted-foreground">
-                  Extensões em breve...
+                <div className="flex flex-col items-center justify-center h-40 text-center p-4">
+                  <Blocks className="h-8 w-8 text-zinc-700 mb-2" />
+                  <p className="text-sm text-zinc-500">Extensões em breve</p>
                 </div>
               )}
             </div>
@@ -369,24 +435,37 @@ export function IDELayout({ projectId }: IDELayoutProps) {
 
         {/* Chat Panel - EXPANDIDO */}
         {chatPanelOpen && (
-          <aside className="w-[450px] shrink-0">
+          <aside className="w-[450px] shrink-0 border-l border-zinc-800 shadow-2xl shadow-black/50 z-30">
             <ChatPanel key={`chat-${projectId}`} projectId={projectId} />
           </aside>
         )}
       </div>
 
       {/* Status Bar */}
-      <footer className="h-6 border-t bg-card flex items-center justify-between px-4 text-xs text-muted-foreground shrink-0">
+      <footer className="h-6 border-t border-zinc-800 bg-zinc-950 flex items-center justify-between px-4 text-[10px] text-zinc-500 shrink-0 select-none">
         <div className="flex items-center gap-4">
-          <span className="flex items-center gap-1">
-            <div className="h-2 w-2 rounded-full bg-green-500" />
-            Conectado
-          </span>
-          <span>TypeScript</span>
+          <Button variant="ghost" className="h-full px-2 gap-1.5 text-zinc-400 hover:text-blue-400 hover:bg-blue-500/10 rounded-none transition-colors">
+            <GitBranch className="h-3 w-3" />
+            <span>main</span>
+          </Button>
+          
+          <div className="flex items-center gap-1.5 px-2 hover:bg-zinc-900 rounded cursor-pointer transition-colors">
+            <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span>Conectado</span>
+          </div>
+          
+          <div className="h-3 w-px bg-zinc-800" />
+          <span>0 problemas</span>
         </div>
+        
         <div className="flex items-center gap-4">
-          <span>UTF-8</span>
-          <span>Ln 1, Col 1</span>
+          <span className="cursor-pointer hover:text-zinc-300 transition-colors">Ln 1, Col 1</span>
+          <span className="cursor-pointer hover:text-zinc-300 transition-colors">UTF-8</span>
+          <span className="cursor-pointer hover:text-zinc-300 transition-colors">TypeScript React</span>
+          <div className="flex items-center gap-1.5 ml-2 text-violet-500">
+            <Blocks className="h-3 w-3" />
+            <span className="font-medium">AI Builder</span>
+          </div>
         </div>
       </footer>
     </div>

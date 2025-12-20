@@ -24,11 +24,16 @@ export function fixJSXSyntax(code: string, filename: string): SyntaxFixResult {
     fixes.push("Removido 'use client'");
   }
 
-  // 2. Corrigir import truncado (linha cortada)
-  // Detectar imports sem fechamento
-  fixed = fixed.replace(/import\s+\{([^}]+)$/gm, (match, imports) => {
-    // Se a linha não termina com } from '...', está truncada
-    fixes.push('Corrigido import truncado');
+  // 2. Corrigir import truncado (apenas se for no final do arquivo)
+  // Detectar imports sem fechamento no final do string
+  fixed = fixed.replace(/import\s+\{([^}]+)$/, (match, imports) => {
+    // Se a linha não termina com } e está no final do arquivo
+    fixes.push('Corrigido import truncado no final do arquivo');
+    // Tentar inferir a linhagem baseada no conteúdo, mas lucide-react é um fallback comum para ícones
+    // Se parece ser recharts
+    if (imports.includes('Chart') || imports.includes('Axis') || imports.includes('Grid')) {
+      return `import { ${imports.trim()} } from 'recharts';`;
+    }
     return `import { ${imports.trim()} } from 'lucide-react';`;
   });
   
@@ -38,8 +43,8 @@ export function fixJSXSyntax(code: string, filename: string): SyntaxFixResult {
     return `import { ${imports.trim()} } from 'lucide-react';`;
   });
 
-  // 4. Corrigir className truncado ou mal formado
-  fixed = fixed.replace(/className="([^"]*)\n/g, (match, classes) => {
+  // 4. Corrigir className truncado ou mal formado (apenas se for no final do arquivo)
+  fixed = fixed.replace(/className="([^"]*)$/, (match, classes) => {
     fixes.push('Corrigido className truncado');
     return `className="${classes.trim()}">\n`;
   });

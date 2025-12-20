@@ -292,15 +292,75 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         },
         'App.tsx': {
           file: {
-            contents: `export default function App() {
+            contents: `import React from 'react';
+import { Sparkles, Terminal, ChevronRight, Zap } from 'lucide-react';
+
+export default function App() {
   return (
-    <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-500 to-purple-600">
-      <div className="text-center text-white">
-        <h1 className="text-4xl font-bold mb-4">
-          Welcome to My App
-        </h1>
-        <p className="text-xl opacity-80">
-          Tailwind is now running locally!
+    <main className="min-h-screen relative overflow-hidden bg-slate-950 font-sans selection:bg-indigo-500/30">
+      {/* Background Effects */}
+      <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none">
+        <div className="absolute top-[-10%] right-[0%] w-[500px] h-[500px] rounded-full bg-purple-600/20 blur-[100px] animate-pulse" />
+        <div className="absolute bottom-[-10%] left-[-10%] w-[600px] h-[600px] rounded-full bg-indigo-600/20 blur-[100px] animate-pulse delay-1000" />
+      </div>
+
+      <div className="relative z-10 container mx-auto px-4 h-screen flex flex-col items-center justify-center">
+        
+        {/* Hero Card */}
+        <div className="max-w-2xl w-full bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-3xl p-8 md:p-12 shadow-2xl text-center transform transition-all hover:scale-[1.01] duration-500">
+          
+          {/* Badge */}
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-sm font-medium mb-8">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+            </span>
+            Ambiente de Desenvolvimento Ativo
+          </div>
+
+          {/* Title */}
+          <h1 className="text-4xl md:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-slate-200 to-slate-400 mb-6 tracking-tight">
+            Crie algo <span className="text-indigo-500">extraordinário.</span>
+          </h1>
+
+          {/* Description */}
+          <p className="text-lg text-slate-400 mb-10 max-w-lg mx-auto leading-relaxed">
+            Seu ambiente React + Vite + Tailwind está pronto. 
+            Use o chat ao lado para descrever seu app e ver a mágica acontecer em tempo real.
+          </p>
+
+          {/* Steps */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10 text-left">
+            <div className="p-4 rounded-2xl bg-slate-800/50 border border-slate-800 hover:border-indigo-500/30 transition-colors group">
+              <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center mb-3 group-hover:bg-indigo-500/20 transition-colors">
+                <Terminal className="w-5 h-5 text-indigo-400" />
+              </div>
+              <h3 className="text-white font-semibold mb-1">1. Descreva</h3>
+              <p className="text-sm text-slate-500">Conte sua ideia para a IA no painel de chat.</p>
+            </div>
+            <div className="p-4 rounded-2xl bg-slate-800/50 border border-slate-800 hover:border-purple-500/30 transition-colors group">
+              <div className="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center mb-3 group-hover:bg-purple-500/20 transition-colors">
+                <Sparkles className="w-5 h-5 text-purple-400" />
+              </div>
+              <h3 className="text-white font-semibold mb-1">2. Gerar</h3>
+              <p className="text-sm text-slate-500">O código é criado e montado instantaneamente.</p>
+            </div>
+            <div className="p-4 rounded-2xl bg-slate-800/50 border border-slate-800 hover:border-emerald-500/30 transition-colors group">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center mb-3 group-hover:bg-emerald-500/20 transition-colors">
+                <Zap className="w-5 h-5 text-emerald-400" />
+              </div>
+              <h3 className="text-white font-semibold mb-1">3. Visualizar</h3>
+              <p className="text-sm text-slate-500">Interaja com seu app aqui mesmo no preview.</p>
+            </div>
+          </div>
+
+        </div>
+        
+        {/* Footer info */}
+        <p className="mt-8 text-slate-500 text-sm flex items-center gap-2">
+          Pots by <span className="font-semibold text-slate-400">WebContainer</span>
+          <span className="w-1 h-1 rounded-full bg-slate-600" />
+          v1.0.0
         </p>
       </div>
     </main>

@@ -18,4 +18,4 @@ additional_redirect_urls = ["https://app-builder-supabase.vercel.app/*"]
 
 [edge_runtime]
 enabled = true
-policy = "permissive"
+policy = "per_worker"

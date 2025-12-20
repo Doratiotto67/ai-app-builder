@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth/auth-provider';
-import { getProjects, getOrganizations, createProject, createOrganization, deleteProject } from '@/lib/api/project-service';
+import { getProjects, getOrganizations, createProject, createOrganization, deleteProject, deleteAllProjects } from '@/lib/api/project-service';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -89,6 +89,7 @@ export default function ProjectsPage() {
   const [newProjectDescription, setNewProjectDescription] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deletingAll, setDeletingAll] = useState(false);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -194,6 +195,32 @@ export default function ProjectsPage() {
     router.push('/login');
   }
 
+  async function handleDeleteAll() {
+    const count = projects.length;
+    if (count === 0) return;
+    
+    if (!confirm(`⚠️ ATENÇÃO: Você está prestes a EXCLUIR PERMANENTEMENTE ${count} projeto(s).\n\nEsta ação NÃO pode ser desfeita.\n\nDigite "EXCLUIR" para confirmar:`)) return;
+    
+    const confirmation = prompt('Digite "EXCLUIR" para confirmar a exclusão de todos os projetos:');
+    if (confirmation !== 'EXCLUIR') {
+      alert('Exclusão cancelada. É necessário digitar EXCLUIR para confirmar.');
+      return;
+    }
+    
+    setDeletingAll(true);
+    try {
+      const result = await deleteAllProjects();
+      console.log(`[Projects] Deletados ${result.deleted} de ${result.total || result.deleted} projetos`);
+      setProjects([]);
+      alert(`✅ ${result.deleted} projeto(s) excluído(s) com sucesso!`);
+    } catch (error) {
+      console.error('Erro ao excluir todos os projetos:', error);
+      alert('Erro ao excluir projetos. Tente novamente.');
+    } finally {
+      setDeletingAll(false);
+    }
+  }
+
   if (authLoading || loading) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-neutral-950 via-neutral-900 to-neutral-950 flex items-center justify-center">
@@ -289,14 +316,31 @@ export default function ProjectsPage() {
 
       {/* Content */}
       <main className="container mx-auto px-4 py-8">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold mb-2 text-white">Seus Projetos</h1>
-          <p className="text-muted-foreground">
-            {projects.length === 0 
-              ? 'Crie seu primeiro projeto e comece a construir com IA'
-              : `${projects.length} projeto${projects.length !== 1 ? 's' : ''} • Gerencie seus apps`
-            }
-          </p>
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold mb-2 text-white">Seus Projetos</h1>
+            <p className="text-muted-foreground">
+              {projects.length === 0 
+                ? 'Crie seu primeiro projeto e comece a construir com IA'
+                : `${projects.length} projeto${projects.length !== 1 ? 's' : ''} • Gerencie seus apps`
+              }
+            </p>
+          </div>
+          
+          {projects.length > 0 && (
+            <Button
+              variant="outline"
+              className="border-red-500/50 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+              onClick={handleDeleteAll}
+              disabled={deletingAll}
+            >
+              {deletingAll ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Excluindo...</>
+              ) : (
+                <><Trash2 className="mr-2 h-4 w-4" /> Excluir Todos</>
+              )}
+            </Button>
+          )}
         </div>
 
         {projects.length === 0 ? (

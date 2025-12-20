@@ -21,38 +21,49 @@ interface FixedFile {
   fixes: string[];
 }
 
-const FIX_PROMPT = `Você é um agente de correção de código especializado em React/TypeScript/JSX.
+const FIX_PROMPT = `Você é um especialista em corrigir erros de sintaxe em código React/TypeScript/Vite.
 
-Sua tarefa é CORRIGIR erros de sintaxe no código fornecido. 
+Sua ÚNICA tarefa é analisar os arquivos fornecidos e CORRIGIR erros de sintaxe FATAIS que impedem a compilação.
 
-## REGRAS DE CORREÇÃO:
+## 🚨 ERROS CRÍTICOS PARA CORRIGIR:
 
-1. **Parênteses, chaves e colchetes**: Garantir que todos estão balanceados e fechados corretamente
-2. **JSX**: Garantir que todas as tags estão fechadas corretamente
-3. **Imports**: Garantir que a sintaxe de import está correta
-4. **Export**: Garantir que há um export default válido
-5. **Vírgulas e ponto-e-vírgulas**: Corrigir posicionamento incorreto
-6. **Strings template**: Garantir que backticks estão fechados
-7. **Objetos e arrays**: Garantir estrutura correta
+1. **REGEX NÃO TERMINADA / JSX QUEBRADO**:
+   - Erro comum: \`onChange={e => / >\` (o parser acha que é regex)
+   - Correção: \`onChange={e => ...}\` (fechar corretamente a expressão)
+   - Verifique se tags JSX, chaves {} e parênteses () estão balanceados.
 
-## FORMATO DE RESPOSTA:
+2. **IMPORTS**:
+   - Remova imports vazios ou quebrados.
+   - Remova linhas órfãs que não são código válido.
+   - Consolide imports do mesmo pacote.
 
-Para CADA arquivo, responda EXATAMENTE neste formato:
+3. **CLEANUP GERAL**:
+   - Remova \`use client\`.
+   - Converta \`<Link>\` para \`<a>\` (Vite).
+   - Remova referências a Next.js (\`next/image\`, \`next/link\`).
 
----FILE_START---
-path: <caminho do arquivo>
----CONTENT_START---
-<código completo corrigido>
----CONTENT_END---
-fixes: <lista de correções aplicadas, separadas por |>
----FILE_END---
+## ⚠️ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON):
 
-## IMPORTANTE:
-- Retorne o código COMPLETO, não apenas as partes modificadas
-- Se o código já estiver correto, retorne-o sem alterações
-- NÃO adicione comentários explicativos no código
-- Mantenha a formatação e indentação originais quando possível
-- Se houver código claramente truncado ou incompleto, tente completá-lo de forma lógica`;
+Você DEVE retornar APENAS um JSON válido seguindo estritamente este schema:
+
+\`\`\`json
+{
+  "files": [
+    {
+      "path": "caminho/do/arquivo.tsx",
+      "content": "CONTEÚDO COMPLETO E CORRIGIDO AQUI",
+      "wasFixed": true,
+      "fixes": ["Descrição da correção 1", "Descrição da correção 2"]
+    }
+  ]
+}
+\`\`\`
+
+REGRAS:
+- Retorne o código **COMPLETO** no campo "content". NÃO trunque.
+- Se o arquivo não tiver erros, retorne "wasFixed": false e o conteúdo original.
+- O campo "fixes" deve listar o que foi alterado.
+- NÃO ADICIONE TEXTO ANTES OU DEPOIS DO JSON. Apenas o JSON puro.`;
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -76,12 +87,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Preparar o prompt com todos os arquivos
     const filesContent = files.map(f => 
-      `### Arquivo: ${f.path}\n\`\`\`${f.language}\n${f.content}\n\`\`\``
+      `--- ARQUIVO: ${f.path} ---\n\`\`\`${f.language}\n${f.content}\n\`\`\``
     ).join('\n\n');
 
-    const userMessage = `Corrija os seguintes arquivos:\n\n${filesContent}`;
+    const userMessage = `Por favor, analise e corrija os seguintes arquivos se houver erros de sintaxe:\n\n${filesContent}`;
 
     console.log(`[fix-code] Enviando ${files.length} arquivos para correção`);
 
@@ -94,20 +104,19 @@ Deno.serve(async (req) => {
         'X-Title': 'AI App Builder - Code Fixer',
       },
       body: JSON.stringify({
-        model: 'google/gemini-3-flash-preview',
+        model: 'google/gemini-3-flash-preview', // Modelo solicitado pelo usuário
         messages: [
           { role: 'system', content: FIX_PROMPT },
           { role: 'user', content: userMessage },
         ],
-        temperature: 0.2, // Baixa temperatura para correções precisas
-        max_tokens: 32000, // Alto limite para arquivos grandes
+        temperature: 0.1,
+        response_format: { type: 'json_object' }, // Forçar JSON se suportado
       }),
     });
 
     if (!response.ok) {
       const error = await response.text();
       console.error('[fix-code] OpenRouter error:', error);
-      // Se falhar, retornar arquivos originais
       return new Response(JSON.stringify({ 
         files: files.map(f => ({ ...f, wasFixed: false, fixes: [] })),
         error: `OpenRouter error: ${error}`
@@ -117,62 +126,49 @@ Deno.serve(async (req) => {
     }
 
     const data = await response.json();
-    const aiResponse = data.choices?.[0]?.message?.content || '';
+    let aiResponse = data.choices?.[0]?.message?.content || '{}';
     
-    console.log(`[fix-code] Resposta recebida: ${aiResponse.length} caracteres`);
+    // Limpeza caso venha com markdown ```json ... ```
+    aiResponse = aiResponse.replace(/```json\n?|```/g, '').trim();
 
-    // Parsear a resposta
-    const fixedFiles: FixedFile[] = [];
-    const fileBlocks = aiResponse.split('---FILE_START---').filter((b: string) => b.trim());
+    console.log(`[fix-code] Resposta processada (${aiResponse.length} chars)`);
 
-    for (const block of fileBlocks) {
-      const pathMatch = block.match(/path:\s*(.+?)(?:\n|---)/);
-      const contentMatch = block.match(/---CONTENT_START---\n([\s\S]*?)---CONTENT_END---/);
-      const fixesMatch = block.match(/fixes:\s*(.+?)(?:\n|---FILE_END---|$)/);
-
-      if (pathMatch && contentMatch) {
-        const path = pathMatch[1].trim();
-        const content = contentMatch[1].trim();
-        const fixes = fixesMatch ? fixesMatch[1].split('|').map((f: string) => f.trim()).filter((f: string) => f) : [];
-
-        // Encontrar o arquivo original para pegar o language
-        const originalFile = files.find(f => f.path === path);
-        
-        fixedFiles.push({
-          path,
-          content,
-          language: originalFile?.language || 'tsx',
-          wasFixed: fixes.length > 0,
-          fixes,
-        });
-
-        console.log(`[fix-code] Arquivo ${path}: ${fixes.length} correções`);
+    const result = JSON.parse(aiResponse) as { files: FixedFile[] };
+    try {
+      // Validar se result.files existe
+      if (!result || !Array.isArray(result.files)) {
+        throw new Error('Invalid response structure');
       }
-    }
-
-    // Se o parsing falhou, tentar retornar os arquivos originais
-    if (fixedFiles.length === 0) {
-      console.warn('[fix-code] Parsing falhou, retornando arquivos originais');
+    } catch (e) {
+      console.error('[fix-code] JSON Parse Error:', e);
+      console.log('Raw response:', aiResponse.substring(0, 500));
       return new Response(JSON.stringify({ 
         files: files.map(f => ({ ...f, wasFixed: false, fixes: [] })),
-        warning: 'Parsing failed, returning original files'
+        error: 'Failed to parse AI response'
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    // Adicionar arquivos que não foram processados
-    for (const originalFile of files) {
-      if (!fixedFiles.find(f => f.path === originalFile.path)) {
-        fixedFiles.push({
-          ...originalFile,
-          wasFixed: false,
-          fixes: [],
-        });
+    // Merge com arquivos originais para garantir language e path
+    const fixedFiles: FixedFile[] = [];
+    
+    for (const f of files) {
+      const fixed = result.files.find(rf => rf.path === f.path);
+        if (fixed) {
+          fixedFiles.push({
+            path: f.path,
+            content: fixed.content || f.content,
+            language: f.language,
+            wasFixed: fixed.wasFixed || false,
+            fixes: fixed.fixes || [],
+          });
+        } else {
+          fixedFiles.push({ ...f, wasFixed: false, fixes: [] });
+        }
       }
-    }
 
-    console.log(`[fix-code] Retornando ${fixedFiles.length} arquivos corrigidos`);
+    console.log(`[fix-code] Retornando ${fixedFiles.filter(f => f.wasFixed).length} arquivos corrigidos`);
 
     return new Response(JSON.stringify({ files: fixedFiles }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

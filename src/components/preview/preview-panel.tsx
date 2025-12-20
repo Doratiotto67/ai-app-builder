@@ -4,24 +4,15 @@ import { useEffect, useRef, useState } from 'react';
 import { useIDEStore } from '@/stores/ide-store';
 import { useWebContainer } from '@/lib/webcontainer';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import {
-  RefreshCw,
-  ExternalLink,
-  Smartphone,
-  Tablet,
-  Monitor,
-  Globe,
-  Play,
   Loader2,
   AlertCircle,
+  Play,
   Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { previewLog } from '@/lib/debug/logger';
-
-type DeviceType = 'desktop' | 'tablet' | 'mobile';
+import { PreviewHeader, type DeviceType } from './preview-header';
 
 export function PreviewPanel() {
   const { previewUrl, setPreviewUrl, refreshPreview, files } = useIDEStore();
@@ -34,7 +25,6 @@ export function PreviewPanel() {
     status,
     error,
     previewUrl: containerUrl,
-    terminalOutput,
     initProject,
     updateFile,
   } = useWebContainer({
@@ -52,16 +42,33 @@ export function PreviewPanel() {
   // Referência para controlar arquivos já sincronizados
   const lastSyncedFilesRef = useRef<string>('');
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previousFilesLengthRef = useRef<number>(0);
+
+  // DERIVADO: URL ativa (declarado cedo para uso nos useEffects)
+  const activeUrl = manualUrl || containerUrl || previewUrl;
+
+  // RESET: Quando projeto muda (detectado pelo reset de files para vazio e depois populado)
+  useEffect(() => {
+    // Se arquivos foram RESETADOS (de >0 para 0), limpar estado de sync
+    if (files.length === 0 && previousFilesLengthRef.current > 0) {
+      console.log('[PreviewPanel] 🔄 Projeto reset detectado, limpando estado de sync');
+      lastSyncedFilesRef.current = '';
+    }
+    previousFilesLengthRef.current = files.length;
+  }, [files.length]);
 
   // AUTO-SYNC: Sincroniza arquivos quando eles mudam no store (com debounce)
   useEffect(() => {
     if (status !== 'ready' || files.length === 0) return;
 
-    // Criar hash simples dos arquivos para detectar mudanças reais
-    const filesHash = files.map(f => `${f.path}:${f.content_text?.length || 0}`).join('|');
+    // Criar hash simples dos arquivos para detectar mudanças reais (inclui CONTEÚDO, não só tamanho)
+    const filesHash = files.map(f => `${f.path}:${(f.content_text || '').slice(0, 100)}`).join('|');
     
     // Só sincronizar se realmente mudou
-    if (filesHash === lastSyncedFilesRef.current) return;
+    if (filesHash === lastSyncedFilesRef.current) {
+      previewLog.info('⏭️ Arquivos não mudaram, pulando sync');
+      return;
+    }
 
     // Debounce para evitar múltiplas sincronizações em sequência
     if (syncTimeoutRef.current) {
@@ -70,18 +77,38 @@ export function PreviewPanel() {
 
     syncTimeoutRef.current = setTimeout(async () => {
       lastSyncedFilesRef.current = filesHash;
-      console.log('[PreviewPanel] Sincronizando arquivos...');
+      console.log(`[PreviewPanel] 📁 Sincronizando ${files.length} arquivos...`);
       
+      let syncedCount = 0;
       for (const file of files) {
         try {
           const content = file.content_text || '';
           await updateFile(file.path, content);
+          syncedCount++;
         } catch (err) {
           if (err instanceof Error && err.message.includes('Proxy has been released')) {
             console.warn('[WebContainer] Proxy released, skipping sync');
             break;
           }
           console.error(`[WebContainer] Erro ao sincronizar ${file.path}:`, err);
+        }
+      }
+      
+      console.log(`[PreviewPanel] ✅ ${syncedCount} arquivos sincronizados`);
+      
+      // FORÇAR REFRESH do iframe após sincronização bem-sucedida
+      if (iframeRef.current && activeUrl && syncedCount > 0) {
+        console.log('[PreviewPanel] 🔄 Forçando refresh do iframe');
+        const currentSrc = iframeRef.current.src;
+        // Técnica para reload suave sem piscar branco se possível
+        try {
+           if (iframeRef.current.contentWindow) {
+             iframeRef.current.contentWindow.location.reload();
+           } else {
+             iframeRef.current.src = currentSrc;
+           }
+        } catch (e) {
+           iframeRef.current.src = currentSrc;
         }
       }
     }, 500); // Espera 500ms antes de sincronizar
@@ -91,11 +118,21 @@ export function PreviewPanel() {
         clearTimeout(syncTimeoutRef.current);
       }
     };
-  }, [files, status, updateFile]);
+  }, [files, status, updateFile, activeUrl]);
 
   // AUTO-START: Inicia preview automaticamente quando o componente monta
   const hasAutoStartedRef = useRef(false);
   const isStartingRef = useRef(false);
+  const autoStartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+  useEffect(() => {
+    // Limpar timeout se o componente desmontar
+    return () => {
+      if (autoStartTimeoutRef.current) {
+        clearTimeout(autoStartTimeoutRef.current);
+      }
+    };
+  }, []);
   
   useEffect(() => {
     // Iniciar preview se:
@@ -103,33 +140,40 @@ export function PreviewPanel() {
     // 2. Não iniciamos ainda
     // 3. Não estamos no meio de iniciar
     if (status === 'idle' && !hasAutoStartedRef.current && !isStartingRef.current) {
-      // Só auto-iniciar se temos arquivos OU se passaram 2 segundos sem arquivos (iniciar com projeto base)
-      const shouldStart = files.length > 0;
-      
-      if (shouldStart) {
-        console.log('[PreviewPanel] Auto-iniciando preview com', files.length, 'arquivos');
+      // Se temos arquivos, iniciar imediatamente
+      // Se não temos, esperar um pouco (dando tempo para o Supabase retornar)
+      if (files.length > 0) {
+        console.log(`[PreviewPanel] 🚀 Auto-iniciando preview com ${files.length} arquivos`);
         hasAutoStartedRef.current = true;
         isStartingRef.current = true;
         handleStartPreview().finally(() => {
           isStartingRef.current = false;
         });
+      } else {
+        // Esperar 2 segundos para arquivos do Supabase chegarem
+        if (!autoStartTimeoutRef.current) {
+          console.log('[PreviewPanel] ⏳ Aguardando arquivos do Supabase...');
+          autoStartTimeoutRef.current = setTimeout(() => {
+            if (status === 'idle' && !hasAutoStartedRef.current) {
+              console.log('[PreviewPanel] ⚠️ Timeout - iniciando com projeto base');
+              hasAutoStartedRef.current = true;
+              isStartingRef.current = true;
+              handleStartPreview().finally(() => {
+                isStartingRef.current = false;
+              });
+            }
+            autoStartTimeoutRef.current = null;
+          }, 2000);
+        }
       }
     }
   }, [files.length, status]);
-
-  const activeUrl = manualUrl || containerUrl || previewUrl;
 
   const deviceConfig = {
     desktop: { width: '100%', height: '100%' },
     tablet: { width: '768px', height: '1024px' },
     mobile: { width: '375px', height: '667px' },
   };
-
-  const devices = [
-    { id: 'mobile' as const, icon: Smartphone, label: 'Mobile' },
-    { id: 'tablet' as const, icon: Tablet, label: 'Tablet' },
-    { id: 'desktop' as const, icon: Monitor, label: 'Desktop' },
-  ];
 
   const handleRefresh = () => {
     if (iframeRef.current && activeUrl) {
@@ -148,86 +192,33 @@ export function PreviewPanel() {
     await initProject(fileList);
   };
 
-  const statusConfig = {
-    idle: { label: 'Parado', color: 'bg-neutral-500' },
-    booting: { label: 'Iniciando...', color: 'bg-yellow-500' },
-    installing: { label: 'Instalando...', color: 'bg-yellow-500' },
-    starting: { label: 'Carregando...', color: 'bg-blue-500' },
-    ready: { label: 'Pronto', color: 'bg-green-500' },
-    error: { label: 'Erro', color: 'bg-red-500' },
-  };
-
   return (
     <div className="h-full flex flex-col bg-neutral-900 relative">
-      {/* Preview Header */}
-      <div className="h-12 border-b border-neutral-800 flex items-center gap-2 px-3 shrink-0">
-        <div className="flex items-center gap-1 bg-neutral-800 rounded-lg p-1">
-          {devices.map((d) => (
-            <Button
-              key={d.id}
-              variant="ghost"
-              size="sm"
-              className={cn('h-7 w-7 p-0', device === d.id && 'bg-neutral-700')}
-              onClick={() => setDevice(d.id)}
-            >
-              <d.icon className="h-4 w-4" />
-            </Button>
-          ))}
-        </div>
-
-        <div className="flex-1 flex items-center gap-2">
-          <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
-          <Input
-            value={urlInput}
-            onChange={(e) => setUrlInput(e.target.value)}
-            className="h-7 bg-neutral-800 border-neutral-700 text-sm"
-            placeholder="/"
-          />
-        </div>
-
-        <Badge variant="secondary" className="text-xs">
-          <div className={cn('h-2 w-2 rounded-full mr-1', statusConfig[status].color)} />
-          {statusConfig[status].label}
-        </Badge>
-
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleRefresh}
-          className="h-7 w-7 p-0"
-          disabled={status !== 'ready'}
-          title="Atualizar preview"
-        >
-          <RefreshCw className="h-4 w-4" />
-        </Button>
-
-        {activeUrl && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => window.open(activeUrl, '_blank')}
-            className="h-7 w-7 p-0"
-          >
-            <ExternalLink className="h-4 w-4" />
-          </Button>
-        )}
-      </div>
+      <PreviewHeader 
+        device={device} 
+        setDevice={setDevice} 
+        urlInput={urlInput}
+        setUrlInput={setUrlInput}
+        status={status}
+        onRefresh={handleRefresh}
+        activeUrl={activeUrl}
+      />
 
       {/* Preview Content */}
-      <div className="flex-1 flex items-center justify-center p-4 bg-neutral-950 overflow-auto">
+      <div className="flex-1 flex items-center justify-center p-4 bg-neutral-950/50 overflow-auto">
         {status === 'error' && error ? (
-          <div className="text-center text-red-400 max-w-md">
+          <div className="text-center text-red-400 max-w-md bg-red-950/20 p-8 rounded-xl border border-red-500/20">
             <AlertCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
             <h3 className="text-lg font-medium mb-2">Erro no WebContainer</h3>
-            <p className="text-sm opacity-80 mb-4">{error.message}</p>
-            <Button variant="outline" size="sm" onClick={handleStartPreview}>
-              Tentar novamente
+            <p className="text-sm opacity-80 mb-6">{error.message}</p>
+            <Button variant="outline" size="sm" onClick={handleStartPreview} className="border-red-500/30 hover:bg-red-500/10 hover:text-red-300">
+              Reiniciar Ambiente
             </Button>
           </div>
         ) : activeUrl && status === 'ready' ? (
           <div
             className={cn(
-              'bg-white rounded-lg overflow-hidden shadow-2xl transition-all duration-300',
+              'bg-white rounded-lg overflow-hidden shadow-2xl transition-all duration-300 ring-1 ring-white/10',
               device !== 'desktop' && 'border-8 border-neutral-800'
             )}
             style={deviceConfig[device]}
@@ -237,36 +228,41 @@ export function PreviewPanel() {
               src={activeUrl + urlInput}
               className="w-full h-full"
               title="Preview"
+              allow="cross-origin-isolated"
             />
           </div>
         ) : status === 'idle' ? (
           <div className="text-center text-muted-foreground max-w-md">
-            <div className="text-6xl mb-4">🚀</div>
-            <h3 className="text-lg font-medium mb-2">Preview</h3>
-            <p className="text-sm mb-4">
-              Clique no botão abaixo para iniciar o servidor de desenvolvimento no navegador.
-            </p>
-            <p className="text-xs text-zinc-500 mb-6">
-              💡 As dependências do projeto são instaladas localmente no seu navegador usando WebContainer.
-              Isso pode levar alguns segundos na primeira vez.
+            <div className="relative mb-6 mx-auto w-16 h-16 flex items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 ring-1 ring-white/10">
+              <Play className="h-8 w-8 text-white/80 ml-1" />
+            </div>
+            <h3 className="text-lg font-medium mb-2 text-white">Iniciar Preview</h3>
+            <p className="text-sm text-zinc-400 mb-8 max-w-xs mx-auto leading-relaxed">
+              O ambiente de desenvolvimento será iniciado no seu navegador.
             </p>
             <Button
               onClick={handleStartPreview}
-              className="bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600"
+              size="lg"
+              className="bg-white text-black hover:bg-zinc-200 font-medium px-8"
             >
-              <Play className="h-4 w-4 mr-2" />
-              Iniciar Preview
+              Iniciar Servidor
             </Button>
           </div>
         ) : (
           <div className="text-center text-muted-foreground max-w-sm">
             {/* Progress Circle */}
-            <div className="relative w-24 h-24 mx-auto mb-6">
-              <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
+            <div className="relative w-32 h-32 mx-auto mb-8">
+              <svg className="w-full h-full -rotate-90 drop-shadow-2xl" viewBox="0 0 100 100">
+                <defs>
+                  <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#8b5cf6" />
+                    <stop offset="100%" stopColor="#d946ef" />
+                  </linearGradient>
+                </defs>
                 {/* Background circle */}
                 <circle
                   className="text-neutral-800"
-                  strokeWidth="8"
+                  strokeWidth="6"
                   stroke="currentColor"
                   fill="transparent"
                   r="42"
@@ -275,78 +271,50 @@ export function PreviewPanel() {
                 />
                 {/* Progress circle */}
                 <circle
-                  className="text-violet-500 transition-all duration-500"
-                  strokeWidth="8"
+                  stroke="url(#gradient)"
+                  strokeWidth="6"
                   strokeLinecap="round"
-                  stroke="currentColor"
                   fill="transparent"
                   r="42"
                   cx="50"
                   cy="50"
                   strokeDasharray={264}
                   strokeDashoffset={
-                    status === 'booting' ? 264 * 0.8 :
+                    status === 'booting' ? 264 * 0.7 :
                     status === 'installing' ? 264 * 0.4 :
                     status === 'starting' ? 264 * 0.1 : 264
                   }
+                  className="transition-all duration-700 ease-out"
                 />
               </svg>
-              {/* Percentage text */}
+              {/* Status Icon */}
               <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-2xl font-bold text-white">
-                  {status === 'booting' ? '20%' :
-                   status === 'installing' ? '60%' :
-                   status === 'starting' ? '90%' : '0%'}
-                </span>
+                 {status === 'installing' ? (
+                   <div className="animate-bounce">📦</div>
+                 ) : status === 'starting' ? (
+                   <div className="animate-pulse">⚡</div>
+                 ) : (
+                   <Loader2 className="h-8 w-8 text-white/50 animate-spin" />
+                 )}
               </div>
             </div>
 
-            <h3 className="text-lg font-medium mb-2 text-white">
-              {status === 'booting' && 'Iniciando ambiente...'}
-              {status === 'installing' && 'Instalando dependências...'}
-              {status === 'starting' && 'Quase pronto...'}
+            <h3 className="text-lg font-medium mb-1 text-white animate-pulse">
+              {status === 'booting' && 'Iniciando sistema...'}
+              {status === 'installing' && 'Instalando pacotes...'}
+              {status === 'starting' && 'Iniciando servidor...'}
             </h3>
-            
-            {/* Progress steps */}
-            <div className="flex flex-col items-start gap-2 mt-4 text-left bg-neutral-900/50 rounded-lg p-4">
-              <div className={cn(
-                "flex items-center gap-2 text-sm transition-colors",
-                status === 'booting' || status === 'installing' || status === 'starting' 
-                  ? "text-green-400" : "text-neutral-500"
-              )}>
-                {(status === 'installing' || status === 'starting') 
-                  ? <span className="text-green-400">✓</span> 
-                  : <Loader2 className="h-3 w-3 animate-spin" />}
-                Iniciando WebContainer
-              </div>
-              <div className={cn(
-                "flex items-center gap-2 text-sm transition-colors",
-                status === 'installing' ? "text-violet-400" :
-                status === 'starting' ? "text-green-400" : "text-neutral-500"
-              )}>
-                {status === 'starting' 
-                  ? <span className="text-green-400">✓</span>
-                  : status === 'installing' 
-                    ? <Loader2 className="h-3 w-3 animate-spin" />
-                    : <span className="text-neutral-600">○</span>}
-                Instalando dependências
-              </div>
-              <div className={cn(
-                "flex items-center gap-2 text-sm transition-colors",
-                status === 'starting' ? "text-violet-400" : "text-neutral-500"
-              )}>
-                {status === 'starting' 
-                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                  : <span className="text-neutral-600">○</span>}
-                Iniciando servidor
-              </div>
-            </div>
+            <p className="text-xs text-zinc-500 uppercase tracking-wider font-medium">
+               {status === 'booting' && 'WebContainer'}
+               {status === 'installing' && 'NPM Install'}
+               {status === 'starting' && 'Vite Dev'}
+            </p>
           </div>
         )}
       </div>
 
       {/* Botão Limpar Cache - Canto inferior esquerdo */}
-      <div className="absolute bottom-4 left-4 z-10">
+      <div className="absolute bottom-4 left-4 z-10 opacity-0 hover:opacity-100 transition-opacity">
         <Button
           variant="ghost"
           size="sm"
@@ -356,10 +324,10 @@ export function PreviewPanel() {
               window.location.reload();
             }
           }}
-          className="text-xs text-orange-500 hover:text-orange-400 hover:bg-orange-500/10 gap-1"
+          className="text-xs text-zinc-600 hover:text-red-400 hover:bg-red-500/5 gap-1.5"
         >
           <Trash2 className="h-3 w-3" />
-          Limpar cache
+          Reset Cache
         </Button>
       </div>
     </div>

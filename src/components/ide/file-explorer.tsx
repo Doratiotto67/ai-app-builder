@@ -1,7 +1,7 @@
 'use client';
 
 import { useIDEStore } from '@/stores/ide-store';
-import { cn } from '@/lib/utils';
+import { cn, getFileIcon } from '@/lib/utils';
 import {
   ChevronRight,
   ChevronDown,
@@ -19,27 +19,7 @@ interface FileTreeNode {
   isOpen?: boolean;
 }
 
-function getFileIcon(fileName: string): string {
-  const ext = fileName.split('.').pop()?.toLowerCase();
-  const iconMap: Record<string, string> = {
-    ts: '🔷',
-    tsx: '⚛️',
-    js: '🟨',
-    jsx: '⚛️',
-    json: '📋',
-    md: '📝',
-    css: '🎨',
-    scss: '🎨',
-    html: '🌐',
-    svg: '🖼️',
-    png: '🖼️',
-    jpg: '🖼️',
-    gif: '🖼️',
-    env: '🔐',
-    gitignore: '📦',
-  };
-  return iconMap[ext || ''] || '📄';
-}
+
 
 function TreeNode({ node, depth = 0 }: { node: FileTreeNode; depth?: number }) {
   const { toggleFolder, openFile, files, activeFile } = useIDEStore();
@@ -68,8 +48,9 @@ function TreeNode({ node, depth = 0 }: { node: FileTreeNode; depth?: number }) {
     <div>
       <div
         className={cn(
-          'flex items-center gap-1 py-1 px-2 cursor-pointer hover:bg-accent/50 text-sm',
-          isActive && 'bg-accent'
+          'flex items-center gap-1.5 py-1 px-2 cursor-pointer transition-colors text-sm rounded-sm',
+          'hover:bg-zinc-800/80 hover:text-zinc-100',
+          isActive ? 'bg-violet-500/20 text-violet-300' : 'text-zinc-400'
         )}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
         onClick={handleClick}

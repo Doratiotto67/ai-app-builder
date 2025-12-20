@@ -30,7 +30,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { projectId, message, threadId } = await req.json();
+    const { projectId, message, threadId, images } = await req.json();
 
     if (!message) {
       return new Response(JSON.stringify({ error: 'Message is required' }), {
@@ -222,6 +222,29 @@ Todo componente DEVE ter:
 ## 🇧🇷 IDIOMA: Português do Brasil`;
 
 
+    // Build user message content - supports text + images for vision models
+    type MessageContent = string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>;
+    let userMessageContent: MessageContent = message;
+
+    // If images are provided, format as multimodal content
+    if (images && Array.isArray(images) && images.length > 0) {
+      const contentParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [];
+
+      // Add images first
+      for (const img of images) {
+        if (typeof img === 'string' && img.startsWith('data:image')) {
+          contentParts.push({
+            type: 'image_url',
+            image_url: { url: img },
+          });
+        }
+      }
+
+      // Add text message
+      contentParts.push({ type: 'text', text: message });
+      userMessageContent = contentParts;
+    }
+
     // Call OpenRouter API with streaming
     const openrouterResponse = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
       method: 'POST',
@@ -235,7 +258,7 @@ Todo componente DEVE ter:
         model: 'google/gemini-3-flash-preview',
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: message },
+          { role: 'user', content: userMessageContent },
         ],
         stream: true,
         temperature: 0.7,

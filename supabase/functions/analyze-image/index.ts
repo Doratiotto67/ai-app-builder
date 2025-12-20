@@ -1,5 +1,5 @@
-import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "jsr:@supabase/supabase-js@2";
+import "@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "@supabase/supabase-js";
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 
@@ -72,7 +72,7 @@ Responda em formato JSON estruturado.`;
         'X-Title': 'AI App Builder',
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.0-flash-exp', // Updated model as well
+        model: 'z-ai/glm-4.6v', // Updated model as well
         messages: [
           { role: 'system', content: systemPrompt },
           {

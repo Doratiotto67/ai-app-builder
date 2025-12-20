@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useIDEStore } from '@/stores/ide-store';
 import { useAuth } from '@/lib/auth/auth-provider';
-import { sendChatMessage, getOrCreateChatThread, getChatMessages, saveFile } from '@/lib/api/project-service';
+import { sendChatMessage, getOrCreateChatThread, getChatMessages, saveFile, saveFilesBatch, generatePRD, analyzeImage } from '@/lib/api/project-service';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -34,6 +34,7 @@ import {
   ChevronUp,
   Copy,
 } from 'lucide-react';
+import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import type { ChatMessage } from '@/types/database';
@@ -42,6 +43,9 @@ import { useCodeFixer } from '@/hooks/useCodeFixer';
 import { chatLog, extractLog } from '@/lib/debug/logger';
 import { validateAndCompleteFiles, fixAllFiles, fixJSXSyntax as fixSyntax } from '@/lib/code-validation';
 import { fixCode as fixCodeViaAI } from '@/lib/api/project-service';
+// New components for Lovable-style UI
+import { ThreadMessage } from './thread-message';
+import { FileChangePreview, type FileAction } from './file-change-preview';
 
 interface ChatPanelProps {
   projectId: string;
@@ -248,19 +252,25 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
     refreshPreview,
     setActiveFile,
     openFile,
+    updateFile,
   } = useIDEStore();
 
   // Hook do WebContainer para escrever arquivos diretamente
   const { updateFile: writeToContainer, status: containerStatus } = useWebContainer({});
   
   // Hook do agente de correção de código
-  const { fixCode, isFixing, errors, analyzeCode, requestAIFix } = useCodeFixer();
+  const { fixCode: fixActiveFile, isFixing: isEditorFixing, errors, analyzeCode, requestAIFix } = useCodeFixer();
+  const [isFixing, setIsFixing] = useState(false);
 
   const [input, setInput] = useState('');
   const [initialized, setInitialized] = useState(false);
   const [extractedFiles, setExtractedFiles] = useState<ExtractedFile[]>([]);
   const [filesCreated, setFilesCreated] = useState(false);
   const [writingFiles, setWritingFiles] = useState(false);
+  const [thinkingSteps, setThinkingSteps] = useState<{ id: string; label: string; status: 'pending' | 'running' | 'done' | 'error' }[]>([]);
+  // Image upload state
+  const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -278,6 +288,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
 
       const existingMessages = await getChatMessages(thread.id);
       setMessages(existingMessages);
+      
       setInitialized(true);
     } catch (error) {
       console.error('Failed to initialize chat:', error);
@@ -413,122 +424,210 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
         });
       }
 
-      // ETAPA 3: NOVA - Enviar para agente de correção via IA (Gemini 3.0)
-      console.log(`[ChatPanel] 🤖 Enviando ${validatedFiles.length} arquivos para correção via IA...`);
+      // ETAPA 3: AI Fix Agent (Fix-Code)
+      console.log(`[ChatPanel] 🤖 Iniciando agente de correção (Fix-Code)...`);
       let finalFiles = validatedFiles;
       
       try {
-        const aiFixResult = await fixCodeViaAI(validatedFiles);
+        // Notificar UI se possível (opcional, já que estamos dentro do handler)
+        // Se tivéssemos acesso ao setThinkingSteps aqui seria ideal, mas vamos confiar no log por enquanto
         
-        if (aiFixResult.files && aiFixResult.files.length > 0) {
-          finalFiles = aiFixResult.files;
-          
-          // Contar correções feitas pela IA
-          const aiFixCount = aiFixResult.files.filter(f => f.wasFixed).length;
-          if (aiFixCount > 0) {
-            console.log(`[ChatPanel] ✨ IA corrigiu ${aiFixCount} arquivos`);
-            aiFixResult.files.forEach(f => {
-              if (f.wasFixed && f.fixes.length > 0) {
-                console.log(`[ChatPanel] 📝 ${f.path}: ${f.fixes.join(', ')}`);
-              }
-            });
-          } else {
-            console.log(`[ChatPanel] ✅ IA não encontrou erros para corrigir`);
-          }
-        }
+        const { files: aiFixedFiles, error: aiError } = await fixCodeViaAI(validatedFiles.map(f => ({
+          path: f.path,
+          content: f.content,
+          language: f.language
+        })));
         
-        if (aiFixResult.error) {
-          console.warn(`[ChatPanel] ⚠️ Aviso do agente de correção: ${aiFixResult.error}`);
+        if (aiError) {
+          console.error('[ChatPanel] Erro no agente fix-code:', aiError);
+          // Fallback para arquivos validados apenas
+        } else if (aiFixedFiles) {
+          console.log(`[ChatPanel] ✅ Agente retornou ${aiFixedFiles.length} arquivos processados`);
+          finalFiles = aiFixedFiles.map(f => ({
+            path: f.path,
+            content: f.content,
+            language: f.language
+          }));
         }
-      } catch (aiError) {
-        console.warn(`[ChatPanel] ⚠️ Agente de correção indisponível, usando arquivos validados:`, aiError);
-        // Continuar com os arquivos validados se o agente falhar
+      } catch (err) {
+        console.error('[ChatPanel] Falha crítica ao chamar fix-code:', err);
+        // Continua com arquivos validados localmente
       }
+
+      console.log(`[ChatPanel] ⚡ Processando ${finalFiles.length} arquivos para salvamento...`);
       
-      const createdFiles: string[] = [];
-      
-      for (const file of finalFiles) {
-        // Converter path Next.js → Vite
+      // Convert all files first (sync)
+      const convertedFiles = finalFiles.map(file => {
         const { path: convertedPath, content: convertedContent } = convertToVitePath(file.path, file.content);
-        
         console.log(`[ChatPanel] Convertendo: ${file.path} → ${convertedPath}`);
-        
-        // 1. Adicionar ao store do IDE (Estado local)
+        return { 
+          path: convertedPath, 
+          content: convertedContent, 
+          language: file.language 
+        };
+      });
+      
+      // 1. Add all files to store (sync, fast)
+      for (const file of convertedFiles) {
         addFile({
           id: crypto.randomUUID(),
           project_id: projectId,
-          path: convertedPath,
-          content_text: convertedContent,
+          path: file.path,
+          content_text: file.content,
           storage_path: null,
           sha256: null,
           language: file.language,
           is_binary: false,
-          size_bytes: new TextEncoder().encode(convertedContent).length,
+          size_bytes: new TextEncoder().encode(file.content).length,
           version: 1,
           last_modified_by: user?.id || null,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         });
-
-        // 2. Salvar no Supabase (Persistência)
-        if (projectId && user) {
-          try {
-            await saveFile(projectId, convertedPath, convertedContent);
-            console.log(`[Supabase] Arquivo salvo: ${convertedPath}`);
-          } catch (err) {
-            console.error(`[Supabase] Erro ao salvar ${convertedPath}:`, err);
-            // Não falhar o fluxo inteiro se o save falhar, mas logar
-          }
-        }
-
-        // 3. Escrever no WebContainer (se estiver pronto)
-        if (containerStatus === 'ready') {
-          try {
-            await writeToContainer(convertedPath, convertedContent);
-            console.log(`[WebContainer] Arquivo escrito: ${convertedPath}`);
-            createdFiles.push(convertedPath);
-          } catch (err) {
-            console.error(`[WebContainer] Erro ao escrever ${convertedPath}:`, err);
-          }
-        }
       }
       
-      setFilesCreated(true);
+      // 2. Save to Supabase in BATCH (single session, parallel requests)
+      if (projectId && user) {
+        saveFilesBatch(projectId, convertedFiles)
+          .then(result => {
+            console.log(`[Supabase] ✓ ${result.saved.length} arquivos salvos`);
+            if (result.errors.length > 0) {
+              console.error(`[Supabase] ✗ ${result.errors.length} erros:`, result.errors);
+            }
+          })
+          .catch(err => console.error('[Supabase] Batch save failed:', err));
+      }
       
-      // 4. Atualizar preview se arquivos foram escritos
-      if (createdFiles.length > 0 && containerStatus === 'ready') {
-        // Pequeno delay para garantir que arquivos foram salvos
-        setTimeout(() => {
-          refreshPreview();
-          console.log('[ChatPanel] Preview atualizado após criação de arquivos');
-        }, 500);
+      // 3. Write to WebContainer in PARALLEL (non-blocking)
+      if (containerStatus === 'ready') {
+        Promise.all(
+          convertedFiles.map(file => 
+            writeToContainer(file.path, file.content)
+              .then(() => console.log(`[WebContainer] ✓ ${file.path}`))
+              .catch(err => console.error(`[WebContainer] ✗ ${file.path}:`, err))
+          )
+        );
+      }
+      
+      const createdFiles = convertedFiles.map(f => f.path);
+
+      setFilesCreated(true);
+      if (createdFiles.length > 0) {
+        refreshPreview();
       }
     } catch (error) {
-      console.error('Erro ao criar arquivos:', error);
+      console.error('Failed to create files:', error);
     } finally {
       setWritingFiles(false);
     }
-  }, [extractedFiles, addFile, projectId, user, containerStatus, writeToContainer, convertToVitePath, refreshPreview]);
+  }, [extractedFiles, convertToVitePath, addFile, projectId, user, containerStatus, updateFile, refreshPreview, writeToContainer, fixCodeViaAI]);
 
-  const [lastProcessedId, setLastProcessedId] = useState<string | null>(null);
+  // Image Helper Functions
+  const convertImageToWebP = useCallback((file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          
+          // Resize if too large (max 1200px)
+          const MAX_SIZE = 1200;
+          if (width > MAX_SIZE || height > MAX_SIZE) {
+            if (width > height) {
+              height = Math.round((height * MAX_SIZE) / width);
+              width = MAX_SIZE;
+            } else {
+              width = Math.round((width * MAX_SIZE) / height);
+              height = MAX_SIZE;
+            }
+          }
+          
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return reject('No context');
+          
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/webp', 0.8));
+        };
+        img.onerror = reject;
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }, []);
 
-  // Extrair arquivos quando streaming terminar - AGORA SALVA AUTOMATICAMENTE
-  useEffect(() => {
-    if (!isStreaming && messages.length > 0) {
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage.role === 'assistant' && lastMessage.content && lastMessage.id !== lastProcessedId) {
-        const extracted = extractFilesFromContent(lastMessage.content);
-        if (extracted.length > 0) {
-          console.log(`[ChatPanel] Auto-salvando ${extracted.length} arquivos da mensagem ${lastMessage.id}`);
-          setLastProcessedId(lastMessage.id);
-          setExtractedFiles(extracted);
-          setFilesCreated(false);
-          // Chamada automática para criar arquivos
-          handleCreateFiles(extracted);
+  const handleImageUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    // Check limit
+    if (attachedImages.length + files.length > 5) {
+      alert('Máximo de 5 imagens.');
+      return;
+    }
+
+    const newImages: string[] = [];
+    for (const file of Array.from(files)) {
+      if (file.type.startsWith('image/')) {
+        try {
+          const webp = await convertImageToWebP(file);
+          newImages.push(webp);
+        } catch (err) {
+          console.error('Image processing error:', err);
         }
+        
       }
     }
-  }, [isStreaming, messages, handleCreateFiles, lastProcessedId]);
+    
+    setAttachedImages(prev => [...prev, ...newImages]);
+    
+    // Reset input
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [attachedImages.length, convertImageToWebP]);
+
+  const removeAttachedImage = (index: number) => {
+    setAttachedImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    
+    // Check if we have any images
+    const imageItems = Array.from(items).filter(item => item.type.startsWith('image/'));
+    
+    if (imageItems.length > 0) {
+      // Don't prevent default immediately if not purely image pasting, 
+      // but usually we want to prevent binary data paste
+      
+      if (attachedImages.length + imageItems.length > 5) {
+        alert('Máximo de 5 imagens.');
+        return;
+      }
+
+      const newImages: string[] = [];
+      for (const item of imageItems) {
+        const file = item.getAsFile();
+        if (file) {
+          try {
+            const webp = await convertImageToWebP(file);
+            newImages.push(webp);
+          } catch (err) {
+            console.error('Paste image error:', err);
+          }
+        }
+      }
+      
+      if (newImages.length > 0) {
+        e.preventDefault(); // Remove o arquivo da colagem para não virar texto
+        setAttachedImages(prev => [...prev, ...newImages]);
+      }
+    }
+  }, [attachedImages.length, convertImageToWebP]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -544,13 +643,14 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
         role: 'user',
         content: input.trim(),
         content_json: null,
-        attachments: null,
+        attachments: attachedImages.length > 0 ? { images: attachedImages } : null,
         created_by: user?.id || null,
         created_at: new Date().toISOString(),
       };
 
       addMessage(userMessage);
       setInput('');
+      setAttachedImages([]); // Clear images after sending
       setIsStreaming(true);
       setStreamingContent('');
       setExtractedFiles([]);
@@ -565,18 +665,115 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
         const finalPrompt = input.trim() + activeFileContext;
 
         if (user && currentThread) {
-          chatLog.info('🔐 Modo autenticado - usando Supabase Edge Function');
-          chatLog.time('chat-response');
+          chatLog.info('🔐 Modo autenticado - usando fluxo completo');
+          chatLog.time('full-response');
+          
+          let finalPromptForCode = finalPrompt;
+          
+          // STEP 1: Analyze images if present (GLM Vision)
+          if (attachedImages.length > 0) {
+            setThinkingSteps([{ id: 'analyze', label: '🔍 Analisando imagens...', status: 'running' }]);
+            
+            try {
+              // Analyze images in PARALLEL for speed
+              const imageDescriptions: string[] = [];
+              const currentInput = input.trim();
+              const currentImages = [...attachedImages];
+              
+              const results = await Promise.all(
+                currentImages.map(img => 
+                  analyzeImage(img, currentInput).catch(err => {
+                    console.warn('[ChatPanel] Erro ao analisar imagem:', err);
+                    return null;
+                  })
+                )
+              );
+              
+              for (const result of results) {
+                if (result?.analysis) {
+                  imageDescriptions.push(result.analysis);
+                }
+              }
+              
+              if (imageDescriptions.length > 0) {
+                finalPromptForCode = `${currentInput}\n\n## Análise das Imagens:\n${imageDescriptions.join('\n\n---\n\n')}`;
+              }
+              
+              setThinkingSteps(prev => prev.map(s => 
+                s.id === 'analyze' ? { ...s, status: 'done' } : s
+              ));
+            } catch (err) {
+              console.warn('[ChatPanel] Erro na análise de imagens:', err);
+              setThinkingSteps(prev => prev.map(s => 
+                s.id === 'analyze' ? { ...s, status: 'error' } : s
+              ));
+            }
+          }
+          
+          // STEP 2: Generate PRD (streaming)
+          setThinkingSteps(prev => [...prev, { id: 'prd', label: '📝 Gerando PRD...', status: 'running' }]);
+          
+          let prdContent = '';
+          try {
+            await generatePRD(
+              projectId,
+              finalPromptForCode,
+              undefined, // context
+              (delta) => {
+                prdContent += delta;
+                // Show PRD generation progress
+              },
+              () => {
+                // Status callback
+              },
+              (prd) => {
+                prdContent = prd;
+                setThinkingSteps(prev => prev.map(s => 
+                  s.id === 'prd' ? { ...s, status: 'done' } : s
+                ));
+              },
+              (error) => {
+                console.error('[ChatPanel] PRD error:', error);
+                setThinkingSteps(prev => prev.map(s => 
+                  s.id === 'prd' ? { ...s, status: 'error' } : s
+                ));
+              }
+            );
+          } catch (err) {
+            console.warn('[ChatPanel] PRD generation failed, using original prompt:', err);
+            prdContent = finalPromptForCode; // Fallback to original prompt
+          }
+          
+          // STEP 3: Generate Code (Gemini, streaming)
+          setThinkingSteps(prev => [...prev, { id: 'code', label: '💻 Gerando código...', status: 'running' }]);
+          
           let fullContent = '';
+          const codePrompt = prdContent 
+            ? `## PRD (Documento de Requisitos):\n${prdContent}\n\n## INSTRUÇÃO:\nImplemente o PRD acima gerando o código completo.`
+            : finalPromptForCode;
+          
           await sendChatMessage(
             projectId,
             currentThread.id,
-            finalPrompt,
+            codePrompt,
             (delta: string) => {
               fullContent += delta;
               appendStreamingContent(delta);
+              setThinkingSteps(prev => prev.map(s => 
+                s.id === 'code' ? { ...s, status: 'done' } : s
+              ));
+            },
+            (phase?: string) => {
+              if (phase === 'thinking') {
+                setThinkingSteps(prev => prev.map(s => 
+                  s.id === 'code' ? { ...s, label: '💻 Pensando...', status: 'running' } : s
+                ));
+              }
             },
             () => {
+              // STEP 4: Add message and auto-save files
+              setThinkingSteps(prev => [...prev, { id: 'saving', label: '✅ Salvando arquivos...', status: 'running' }]);
+              
               const assistantMessage: ChatMessage = {
                 id: crypto.randomUUID(),
                 project_id: projectId,
@@ -589,15 +786,40 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                 created_at: new Date().toISOString(),
               };
               addMessage(assistantMessage);
-              setIsStreaming(false);
               setStreamingContent('');
+              
+              // Extract files WITHOUT auto-save (user must approve)
+              const extracted = extractFilesFromContent(fullContent);
+              if (extracted.length > 0) {
+                console.log(`[ChatPanel] ${extracted.length} arquivos detectados (aguardando aprovação)`);
+                setExtractedFiles(extracted);
+                setFilesCreated(false);
+                // NÃO chamar handleCreateFiles - usuário deve aprovar
+              }
+              
+              setThinkingSteps(prev => prev.map(s => 
+                s.id === 'saving' ? { ...s, status: 'done' } : s
+              ));
+              
+              // CRÍTICO: Limpar estado de streaming para UI não ficar travada
+              setIsStreaming(false);
+              
+              // Limpar steps após um pequeno delay para o usuário ver a conclusão
+              setTimeout(() => {
+                setThinkingSteps([]);
+              }, 1500);
+              
+              chatLog.timeEnd('full-response');
             },
             (error: Error) => {
               console.error('Chat error:', error);
               setIsStreaming(false);
               setStreamingContent('');
-            }
+            },
+            attachedImages.length > 0 ? attachedImages : undefined
           );
+          // Clear attached images after sending
+          setAttachedImages([]);
         } else {
           // Demo mode - use local API route
           const response = await fetch('/api/chat', {
@@ -633,6 +855,14 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                   if (parsed.type === 'message_delta' && parsed.data?.text) {
                     fullContent += parsed.data.text;
                     appendStreamingContent(parsed.data.text);
+                    // Se recebemos texto, o pensamento acabou
+                    setThinkingSteps(prev => 
+                      prev.map(s => s.id === 'thinking' ? { ...s, status: 'done' } : s)
+                    );
+                  } else if (parsed.type === 'status_update') {
+                    if (parsed.data?.phase === 'thinking') {
+                      setThinkingSteps([{ id: 'thinking', label: 'Pensando...', status: 'running' }]);
+                    }
                   } else if (parsed.type === 'error') {
                     throw new Error(parsed.data?.message || 'Stream error');
                   }
@@ -657,6 +887,15 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
           addMessage(assistantMessage);
           setIsStreaming(false);
           setStreamingContent('');
+
+          // IMPERATIVE AUTO-SAVE: Extract and create files immediately (Demo mode)
+          const extracted = extractFilesFromContent(fullContent);
+          if (extracted.length > 0) {
+            console.log(`[ChatPanel] Auto-salvando ${extracted.length} arquivos (Demo)`);
+            setExtractedFiles(extracted);
+            setFilesCreated(false);
+            handleCreateFiles(extracted);
+          }
         }
       } catch (error) {
         console.error('Chat error:', error);
@@ -696,6 +935,8 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
     }
   };
 
+
+
   const quickActions = [
     { label: 'Criar landing page', prompt: 'Crie uma landing page moderna para um SaaS' },
     { label: 'Dashboard admin', prompt: 'Crie um dashboard administrativo com gráficos' },
@@ -706,15 +947,18 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
   return (
     <div className="h-full flex flex-col bg-zinc-900 border-l border-zinc-800">
       {/* Header */}
-      <div className="h-12 border-b border-zinc-800 flex items-center justify-between px-4 shrink-0 bg-zinc-900/80 backdrop-blur">
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-5 w-5 text-violet-400" />
-          <span className="font-medium text-zinc-100">AI Assistant</span>
+      <div className="h-14 border-b border-white/5 flex items-center justify-between px-6 shrink-0 bg-zinc-900/60 backdrop-blur-xl z-10">
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <div className="absolute inset-0 bg-violet-500/20 blur-md rounded-full animate-pulse" />
+            <Sparkles className="h-5 w-5 text-violet-400 relative z-10" />
+          </div>
+          <span className="font-semibold text-zinc-100 tracking-tight">AI Assistant</span>
         </div>
         {activeAgentRun && (
-          <Badge variant="secondary" className="animate-pulse bg-violet-500/20 text-violet-300">
-            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            {activeAgentRun.agent_type}
+          <Badge variant="secondary" className="animate-pulse bg-violet-500/10 text-violet-400 border border-violet-500/20 px-2 py-0.5">
+            <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+            Processando
           </Badge>
         )}
         {!user && (
@@ -731,49 +975,92 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
         style={{ overflowY: 'auto', maxHeight: 'calc(100% - 12rem)' }}
       >
         {messages.length === 0 && !isStreaming ? (
-          <div className="h-full flex flex-col items-center justify-center text-center py-8">
-            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center mb-4 shadow-lg shadow-violet-500/25">
-              <Bot className="h-8 w-8 text-white" />
-            </div>
-            <h3 className="text-lg font-semibold mb-2 text-zinc-100">Como posso ajudar?</h3>
-            <p className="text-sm text-zinc-400 mb-6 max-w-xs">
-              Descreva o app que você quer criar e eu vou gerar o código para você.
-            </p>
-            <div className="grid grid-cols-2 gap-2 w-full max-w-sm">
-              {quickActions.map((action) => (
-                <Button
+          <div className="h-full flex flex-col items-center justify-center text-center px-6">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.5, ease: 'easeOut' }}
+              className="relative mb-8"
+            >
+              <div className="absolute inset-0 bg-gradient-to-br from-violet-500/30 to-fuchsia-500/30 blur-2xl rounded-full scale-150 animate-pulse" />
+              <div className="relative w-20 h-20 rounded-3xl bg-gradient-to-br from-violet-500 via-fuchsia-500 to-pink-500 flex items-center justify-center shadow-2xl shadow-violet-500/40 transform -rotate-3 hover:rotate-0 transition-transform duration-500">
+                <Bot className="h-10 w-10 text-white drop-shadow-md" />
+              </div>
+            </motion.div>
+            
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2, duration: 0.4 }}
+            >
+              <h3 className="text-2xl font-bold mb-3 bg-clip-text text-transparent bg-gradient-to-b from-white to-white/60">
+                Como posso ajudar?
+              </h3>
+              <p className="text-[15px] text-zinc-400 mb-10 max-w-[280px] leading-relaxed">
+                Descreva o app que você quer criar e eu vou gerar o código para você.
+              </p>
+            </motion.div>
+
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3, duration: 0.5 }}
+              className="grid grid-cols-1 gap-2.5 w-full max-w-[340px]"
+            >
+              {quickActions.map((action, idx) => (
+                <button
                   key={action.label}
-                  variant="outline"
-                  size="sm"
-                  className="h-auto py-2 px-3 text-xs text-left justify-start border-zinc-700 bg-zinc-800/50 hover:bg-zinc-700 hover:border-violet-500/50 text-zinc-300"
+                  className="group relative flex items-center justify-between p-3.5 rounded-2xl bg-zinc-800/20 backdrop-blur-md border border-white/5 hover:border-violet-500/30 hover:bg-zinc-800/40 transition-all duration-300 text-left"
                   onClick={() => setInput(action.prompt)}
                 >
-                  {action.label}
-                </Button>
+                  <span className="text-sm text-zinc-300 group-hover:text-white transition-colors">{action.label}</span>
+                  <Plus className="h-4 w-4 text-zinc-500 group-hover:text-violet-400 group-hover:rotate-90 transition-all duration-300" />
+                </button>
               ))}
-            </div>
+            </motion.div>
           </div>
         ) : (
-          <>
-            {messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
-            ))}
-            {isStreaming && streamingContent && (
-              <div className="flex gap-3">
-                <Avatar className="h-8 w-8 shrink-0">
-                  <AvatarFallback className="bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white">
-                    <Bot className="h-4 w-4" />
-                  </AvatarFallback>
-                </Avatar>
-                <div className="flex-1 bg-zinc-800 rounded-lg p-3 border border-zinc-700">
-                  <div className="prose prose-sm prose-invert max-w-none prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-700">
-                    <ReactMarkdown>{streamingContent}</ReactMarkdown>
-                  </div>
-                  <span className="inline-block w-2 h-4 bg-violet-500 animate-pulse ml-1" />
-                </div>
-              </div>
+          <div className="space-y-6">
+            {messages.map((message) => {
+              // Extract files for this message if any
+              const msgFiles = extractFilesFromContent(message.content || '').map(f => ({
+                path: f.path,
+                action: 'created' as const, 
+                language: f.language
+              }));
+
+              return (
+                <ThreadMessage 
+                  key={message.id} 
+                  role={message.role as 'user' | 'assistant'}
+                  content={message.content || ''}
+                  images={message.role === 'user' ? (message.attachments as any) || undefined : undefined} // Adjust based on your types
+                  files={msgFiles}
+                  onFileClick={(path) => {
+                    const file = files.find(f => f.path === path || f.path.endsWith(path));
+                    if (file) {
+                      setActiveFile(file);
+                      openFile(file);
+                    }
+                  }}
+                />
+              );
+            })}
+            
+            {isStreaming && (
+              <ThreadMessage
+                role="assistant"
+                content={streamingContent}
+                isStreaming={true}
+                steps={thinkingSteps}
+                files={extractedFiles.map(f => ({
+                  path: f.path,
+                  action: 'created',
+                  language: f.language
+                }))}
+              />
             )}
-          </>
+          </div>
         )}
       </div>
 
@@ -820,266 +1107,238 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       )}
 
       {/* Input */}
-      <div className="border-t border-zinc-800 p-4 shrink-0 bg-zinc-900">
-        <form onSubmit={handleSubmit} className="relative">
-          <Textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Descreva o que você quer criar..."
-            className="min-h-[60px] max-h-[120px] pr-24 resize-none bg-zinc-800 border-zinc-700 text-zinc-100 placeholder:text-zinc-500 focus:border-violet-500 focus:ring-violet-500/20"
-            disabled={isStreaming}
-          />
-          <div className="absolute bottom-2 right-2 flex items-center gap-1">
-            {/* Menu [+] com ações */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
+      <div className="px-2 pb-4 shrink-0 relative bg-zinc-900">
+        {/* Glow behind input area */}
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[90%] h-px bg-gradient-to-r from-transparent via-violet-500/20 to-transparent" />
+        
+        {/* Attached images preview */}
+        {attachedImages.length > 0 && (
+          <div className="flex flex-wrap gap-2.5 mb-2 px-2">
+            {attachedImages.map((img, idx) => (
+              <motion.div 
+                key={idx} 
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="relative group"
+              >
+                <img
+                  src={img}
+                  alt={`Anexo ${idx + 1}`}
+                  className="w-14 h-14 rounded-xl object-cover border border-zinc-700 shadow-md"
+                />
+                <button
                   type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/50"
-                  disabled={isStreaming}
+                  onClick={() => removeAttachedImage(idx)}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-zinc-900 border border-zinc-700 text-zinc-400 hover:text-white hover:bg-red-500 flex items-center justify-center text-[10px] shadow-sm transition-all"
                 >
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48 bg-zinc-800 border-zinc-700">
-                <DropdownMenuItem
-                  onClick={() => setInput(input + '\n\nCrie um novo componente React com TypeScript e Tailwind CSS para: ')}
-                  className="text-zinc-200 focus:bg-zinc-700 focus:text-white cursor-pointer"
-                >
-                  <Code className="h-4 w-4 mr-2 text-violet-400" />
-                  Criar Componente
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setInput(input + '\n\nCrie uma nova página Next.js com: ')}
-                  className="text-zinc-200 focus:bg-zinc-700 focus:text-white cursor-pointer"
-                >
-                  <Layout className="h-4 w-4 mr-2 text-blue-400" />
-                  Criar Página
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setInput(input + '\n\nAdicione uma nova feature: ')}
-                  className="text-zinc-200 focus:bg-zinc-700 focus:text-white cursor-pointer"
-                >
-                  <Zap className="h-4 w-4 mr-2 text-yellow-400" />
-                  Adicionar Feature
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setInput(input + '\n\nCrie um arquivo de configuração: ')}
-                  className="text-zinc-200 focus:bg-zinc-700 focus:text-white cursor-pointer"
-                >
-                  <FileText className="h-4 w-4 mr-2 text-green-400" />
-                  Criar Config
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className={cn(
-                "h-8 w-8 hover:bg-violet-500/10",
-                isFixing ? "text-violet-300" : "text-violet-400 hover:text-violet-300"
-              )}
-              disabled={isStreaming || isFixing || files.length === 0}
-              title={files.length > 0 ? "Corrigir código dos arquivos" : "Nenhum arquivo no projeto"}
-              onClick={async () => {
-                // Se não há arquivo ativo, selecionar o primeiro arquivo do projeto
-                let targetFile = activeFile;
-                if (!targetFile && files.length > 0) {
-                  targetFile = files[0];
-                  setActiveFile(targetFile);
-                  openFile(targetFile);
-                }
-                
-                if (!targetFile) {
-                  addMessage({
-                    id: crypto.randomUUID(),
-                    thread_id: currentThread?.id || '',
-                    role: 'assistant',
-                    content: '⚠️ Não há arquivos no projeto para corrigir.',
-                    created_at: new Date().toISOString(),
-                  } as ChatMessage);
-                  return;
-                }
-                
-                // Primeiro tenta correção básica
-                let fixedCode = await fixCode();
-                
-                // Se não houver correção básica mas há erros, solicita via IA
-                if (!fixedCode && targetFile) {
-                  const currentContent = editorContent[targetFile.id] || targetFile.content_text || '';
-                  const foundErrors = analyzeCode(currentContent);
-                  
-                  if (foundErrors.length > 0) {
-                    addMessage({
-                      id: crypto.randomUUID(),
-                      thread_id: currentThread?.id || '',
-                      role: 'assistant',
-                      content: `🔍 Analisando erros em \`${targetFile.path}\`...\n\n${foundErrors.map(e => `- Linha ${e.line}: ${e.message}`).join('\n')}\n\n⏳ Solicitando correção via IA...`,
-                      created_at: new Date().toISOString(),
-                    } as ChatMessage);
-                    
-                    fixedCode = await requestAIFix();
-                  }
-                }
-                
-                if (fixedCode && targetFile && containerStatus === 'ready') {
-                  await writeToContainer(targetFile.path, fixedCode);
-                  addMessage({
-                    id: crypto.randomUUID(),
-                    thread_id: currentThread?.id || '',
-                    role: 'assistant',
-                    content: `✅ Código corrigido em \`${targetFile.path}\`\n\n**Correções aplicadas:**\n- Tags self-closing corrigidas\n- Placeholders removidos\n- Sintaxe validada\n- Código atualizado no WebContainer`,
-                    created_at: new Date().toISOString(),
-                  } as ChatMessage);
-                } else if (!fixedCode && targetFile) {
-                  addMessage({
-                    id: crypto.randomUUID(),
-                    thread_id: currentThread?.id || '',
-                    role: 'assistant',
-                    content: `ℹ️ Nenhum erro detectado em \`${targetFile.path}\``,
-                    created_at: new Date().toISOString(),
-                  } as ChatMessage);
-                }
-              }}
-            >
-              {isFixing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Wand2 className="h-4 w-4" />
-              )}
-            </Button>
-            <Button
-              type="submit"
-              size="icon"
-              className="h-8 w-8 bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600"
-              disabled={!input.trim() || isStreaming}
-            >
-              {isStreaming ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="h-4 w-4" />
-              )}
-            </Button>
+                  ×
+                </button>
+              </motion.div>
+            ))}
           </div>
-        </form>
-        <p className="text-xs text-zinc-500 mt-2 text-center">
-          Enter para enviar • Shift+Enter para nova linha
-        </p>
-      </div>
-    </div>
-  );
-}
+        )}
 
-// Componente de mensagem compacta
-function MessageBubble({ message }: { message: ChatMessage }) {
-  const [showCode, setShowCode] = useState(false);
-  const isUser = message.role === 'user';
-  const content = message.content || '';
-  
-  // Extrair resumo (texto antes do primeiro bloco de código)
-  const codeBlockRegex = /```[\s\S]*?```/g;
-  const hasCode = codeBlockRegex.test(content);
-  codeBlockRegex.lastIndex = 0;
-  
-  // Separar texto e código
-  const textBeforeCode = content.split('```')[0].trim();
-  const codeBlocks = content.match(/```(\w+)?\n([\s\S]*?)```/g) || [];
-  
-  // Extrair arquivos usando a mesma lógica robusta do painel
-  const extractedFilesData = extractFilesFromContent(content);
-  const extractedFiles = extractedFilesData.map(f => f.path);
+        <form onSubmit={handleSubmit} className="w-full">
+          <div className="relative group/input">
+            {/* Input Glass Effect Container */}
+            <div className="absolute -inset-0.5 bg-gradient-to-r from-violet-500/20 to-fuchsia-500/20 rounded-2xl blur opacity-0 group-focus-within/input:opacity-100 transition duration-500" />
+            
+            <div className="relative bg-zinc-900/60 backdrop-blur-xl border border-white/5 rounded-2xl overflow-hidden shadow-2xl transition-all focus-within:border-white/10 focus-within:bg-zinc-900/80">
+              {/* Hidden file input for image upload */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={handleImageUpload}
+              />
+              
+              <Textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                placeholder="Descreva o que você quer criar..."
+                className="w-full min-h-[50px] max-h-[200px] bg-transparent border-none focus-visible:ring-0 px-4 py-3 resize-none text-[15px] text-zinc-100 placeholder:text-zinc-500"
+                disabled={isStreaming}
+              />
 
-  if (isUser) {
-    return (
-      <div className="flex gap-3 flex-row-reverse">
-        <Avatar className="h-8 w-8 shrink-0">
-          <AvatarFallback className="bg-blue-500 text-white">
-            <User className="h-4 w-4" />
-          </AvatarFallback>
-        </Avatar>
-        <div className="bg-blue-600 text-white rounded-lg p-3 max-w-[85%]">
-          <p className="text-sm whitespace-pre-wrap">{content}</p>
-        </div>
-      </div>
-    );
-  }
+              <div className="px-2 pb-2 flex items-center gap-1">
+                {/* Left Actions Group */}
+                <div className="flex items-center mr-auto">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-zinc-400 hover:text-zinc-100 hover:bg-white/5 rounded-lg"
+                        disabled={isStreaming}
+                      >
+                        <Plus className="h-4.5 w-4.5" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="w-56 bg-zinc-900 border-white/10 rounded-xl shadow-2xl">
+                      <DropdownMenuItem
+                        onClick={() => setInput(input + '\n\nCrie um novo componente React com TypeScript e Tailwind CSS para: ')}
+                        className="p-2.5 text-zinc-200 focus:bg-white/5 focus:text-white cursor-pointer"
+                      >
+                        <Code className="h-4 w-4 mr-3 text-violet-400" />
+                        <span className="text-sm font-medium">Criar Componente</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => setInput(input + '\n\nCrie uma nova página Next.js com: ')}
+                        className="p-2.5 text-zinc-200 focus:bg-white/5 focus:text-white cursor-pointer"
+                      >
+                        <Layout className="h-4 w-4 mr-3 text-blue-400" />
+                        <span className="text-sm font-medium">Criar Página</span>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
 
-  return (
-    <div className="flex gap-3">
-      <Avatar className="h-8 w-8 shrink-0">
-        <AvatarFallback className="bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white">
-          <Bot className="h-4 w-4" />
-        </AvatarFallback>
-      </Avatar>
-      <div className="flex-1 max-w-[90%]">
-        {/* Card principal */}
-        <div className="bg-zinc-800 border border-zinc-700 rounded-lg overflow-hidden">
-          {/* Resumo */}
-          <div className="p-3">
-            <p className="text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed">
-              {textBeforeCode || content}
-            </p>
-          </div>
-
-          {/* Lista de arquivos */}
-          {extractedFiles.length > 0 && (
-            <div className="px-3 pb-3">
-              <div className="flex flex-wrap gap-1.5">
-                {extractedFiles.map((file, i) => (
-                  <Badge
-                    key={i}
-                    variant="secondary"
-                    className="bg-zinc-700/50 text-zinc-300 text-xs px-2 py-0.5"
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-zinc-400 hover:text-zinc-100 hover:bg-white/5 rounded-lg"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isStreaming}
+                    title="Anexar imagem"
                   >
-                    📄 {file}
-                  </Badge>
-                ))}
+                    <ImageIcon className="h-4.5 w-4.5" />
+                  </Button>
+
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className={cn(
+                      "h-8 w-8 rounded-lg transition-colors ml-1",
+                      isFixing ? "text-violet-300 bg-violet-500/10" : "text-zinc-400 hover:text-violet-400 hover:bg-violet-500/10"
+                    )}
+                    disabled={isStreaming || isFixing || files.length === 0}
+                    title="Corrigir erros (Agente)"
+                    onClick={async () => {
+                      if (!files.length) return;
+                      setIsFixing(true);
+                      try {
+                        const filesToFix = files.map(f => ({
+                          path: f.path,
+                          content: f.content_text || '',
+                          language: f.language || 'text'
+                        }));
+                        
+                        console.log(`[FixCode] Enviando ${filesToFix.length} arquivos para correção...`);
+                        const result = await fixCodeViaAI(filesToFix);
+                        
+                        if (result.error) {
+                          throw new Error(result.error);
+                        }
+                        
+                        const fixedFiles = result.files.filter((f: any) => f.wasFixed);
+                        const fixedCount = fixedFiles.length;
+                        
+                        if (fixedCount > 0) {
+                          console.log(`[FixCode] ${fixedCount} arquivos corrigidos, aplicando...`);
+                          
+                          // Aplicar correções no store e WebContainer
+                          for (const fixedFile of fixedFiles) {
+                            // 1. Atualizar no store
+                            const existingFile = files.find(f => f.path === fixedFile.path);
+                            if (existingFile) {
+                              updateFile(existingFile.id, { content_text: fixedFile.content });
+                            }
+                            
+                            // 2. Escrever no WebContainer (se estiver pronto)
+                            if (containerStatus === 'ready') {
+                              try {
+                                await writeToContainer(fixedFile.path, fixedFile.content);
+                                console.log(`[FixCode] ✓ ${fixedFile.path} atualizado no WebContainer`);
+                              } catch (err) {
+                                console.warn(`[FixCode] Não foi possível atualizar ${fixedFile.path} no WebContainer:`, err);
+                              }
+                            }
+                          }
+                          
+                          // 3. Mostrar mensagem de sucesso com detalhes
+                          const fixDetails = fixedFiles.map((f: any) => 
+                            `• **${f.path}**: ${f.fixes.join(', ')}`
+                          ).join('\n');
+                          
+                          addMessage({
+                            id: crypto.randomUUID(),
+                            project_id: projectId,
+                            thread_id: currentThread?.id || '',
+                            role: 'assistant',
+                            content: `✅ **${fixedCount} arquivo(s) corrigido(s)**\n\n${fixDetails}\n\n*Arquivos atualizados no editor e preview.*`,
+                            created_at: new Date().toISOString(),
+                            content_json: null,
+                            attachments: null,
+                            created_by: null
+                          } as ChatMessage);
+                          
+                          // 4. Atualizar preview
+                          refreshPreview();
+                          
+                        } else {
+                          addMessage({
+                            id: crypto.randomUUID(),
+                            project_id: projectId,
+                            thread_id: currentThread?.id || '',
+                            role: 'assistant',
+                            content: `✅ Nenhum erro de sintaxe encontrado nos arquivos.`,
+                            created_at: new Date().toISOString(),
+                            content_json: null,
+                            attachments: null,
+                            created_by: null
+                          } as ChatMessage);
+                        }
+                        
+                      } catch (error) {
+                        console.error('[FixCode] Erro:', error);
+                        addMessage({
+                          id: crypto.randomUUID(),
+                          project_id: projectId,
+                          thread_id: currentThread?.id || '',
+                          role: 'assistant',
+                          content: `❌ Erro ao corrigir código: ${error instanceof Error ? error.message : 'Erro desconhecido'}`,
+                          created_at: new Date().toISOString(),
+                          content_json: null,
+                          attachments: null,
+                          created_by: null
+                        } as ChatMessage);
+                      } finally {
+                        setIsFixing(false);
+                      }
+                    }}
+                  >
+                    {isFixing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4.5 w-4.5" />}
+                  </Button>
+                </div>
+
+                {/* Right Action: Send */}
+                <Button
+                  type="submit"
+                  size="icon"
+                  className="rounded-xl h-8 w-8 bg-zinc-100 hover:bg-white text-zinc-900 shadow-md transition-all active:scale-95 disabled:opacity-50"
+                  disabled={!input.trim() || isStreaming}
+                >
+                  {isStreaming ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
+                </Button>
               </div>
             </div>
-          )}
-
-          {/* Toggle de código */}
-          {hasCode && (
-            <>
-              <div className="border-t border-zinc-700">
-                <button
-                  onClick={() => setShowCode(!showCode)}
-                  className="w-full px-3 py-2 flex items-center justify-between text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50 transition-colors"
-                >
-                  <span className="flex items-center gap-1.5">
-                    <Code className="h-3.5 w-3.5" />
-                    {showCode ? 'Ocultar código' : `Ver código (${codeBlocks.length} arquivo${codeBlocks.length > 1 ? 's' : ''})`}
-                  </span>
-                  {showCode ? (
-                    <ChevronUp className="h-4 w-4" />
-                  ) : (
-                    <ChevronDown className="h-4 w-4" />
-                  )}
-                </button>
-              </div>
-
-              {/* Código expandido */}
-              {showCode && (
-                <div className="border-t border-zinc-700 bg-zinc-900/50 max-h-[400px] overflow-auto">
-                  <div className="p-3">
-                    <div className="prose prose-sm prose-invert max-w-none prose-pre:bg-zinc-950 prose-pre:border prose-pre:border-zinc-700 prose-code:text-violet-300">
-                      <ReactMarkdown>
-                        {codeBlocks.join('\n\n')}
-                      </ReactMarkdown>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
+          </div>
+        </form>
       </div>
     </div>
   );
 }
+
+
 
