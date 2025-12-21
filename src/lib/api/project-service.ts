@@ -80,16 +80,16 @@ export async function deleteAllProjects() {
   const { data: projects, error: fetchError } = await supabase
     .from('projects')
     .select('id');
-  
+
   if (fetchError) throw fetchError;
-  
+
   if (!projects || projects.length === 0) {
     return { deleted: 0 };
   }
 
   // Deletar todos em paralelo
   const results = await Promise.all(
-    projects.map(p => 
+    projects.map(p =>
       supabase.from('projects').delete().eq('id', p.id)
     )
   );
@@ -152,7 +152,7 @@ export async function saveFile(projectId: string, path: string, content: string)
 
 // Batch save function - gets session ONCE and saves all files in parallel
 export async function saveFilesBatch(
-  projectId: string, 
+  projectId: string,
   files: Array<{ path: string; content: string }>
 ): Promise<{ saved: string[]; errors: Array<{ path: string; error: string }> }> {
   const { data: { session } } = await supabase.auth.getSession();
@@ -160,7 +160,7 @@ export async function saveFilesBatch(
 
   const saved: string[] = [];
   const errors: Array<{ path: string; error: string }> = [];
-  
+
   const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const headers = {
     'Content-Type': 'application/json',
@@ -253,7 +253,16 @@ export async function sendChatMessage(
   onStatus?: (phase: string) => void,
   onDone?: () => void,
   onError?: (error: Error) => void,
-  images?: string[] // Base64 encoded images for vision
+  images?: string[], // Base64 encoded images for vision
+  abortSignal?: AbortSignal, // Optional signal to cancel the stream
+  targets?: { paths: string[]; symbols?: string[] }, // Surgical mode targets
+  mode?: 'surgical' | 'creative', // Surgical or creative mode
+  prdMetadata?: { // Metadados do PRD para arquitetura dinâmica
+    complexity?: 'SIMPLE' | 'BASIC' | 'INTERMEDIATE' | 'ADVANCED';
+    architecture_template?: string;
+    features?: Record<string, boolean>;
+    recommended_structure?: string[];
+  }
 ) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error('Not authenticated');
@@ -267,7 +276,8 @@ export async function sendChatMessage(
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ projectId, threadId, message, images }),
+        body: JSON.stringify({ projectId, threadId, message, images, targets, mode, prdMetadata }),
+        signal: abortSignal, // Pass abort signal to fetch
       }
     );
 
@@ -323,6 +333,12 @@ export async function sendChatMessage(
       }
     }
   } catch (err) {
+    // Handle abort gracefully - don't treat as error
+    if (err instanceof Error && err.name === 'AbortError') {
+      console.log('[sendChatMessage] Stream aborted by user');
+      onDone?.(); // Still call done to clean up UI state
+      return;
+    }
     onError?.(err instanceof Error ? err : new Error('Unknown error'));
     throw err;
   }
@@ -357,12 +373,12 @@ export async function analyzeImage(imageUrl: string, prompt?: string) {
 // ============= PRD Generation =============
 
 export async function generatePRD(
-  projectId: string, 
-  description: string, 
+  projectId: string,
+  description: string,
   context?: string,
   onDelta?: (text: string) => void,
   onStatus?: (phase: string) => void,
-  onDone?: (prd: string) => void,
+  onDone?: (prd: string, metadata?: any) => void,
   onError?: (error: Error) => void
 ) {
   const { data: { session } } = await supabase.auth.getSession();
@@ -391,11 +407,12 @@ export async function generatePRD(
 
     const decoder = new TextDecoder();
     let fullPRD = '';
+    let prdMetadata: any = null;
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
-        onDone?.(fullPRD);
+        onDone?.(fullPRD, prdMetadata);
         break;
       }
 
@@ -406,7 +423,7 @@ export async function generatePRD(
         if (line.startsWith('data: ')) {
           const data = line.slice(6).trim();
           if (data === '[DONE]') {
-            onDone?.(fullPRD);
+            onDone?.(fullPRD, prdMetadata);
             continue;
           }
 
@@ -419,7 +436,8 @@ export async function generatePRD(
               onStatus?.(parsed.data?.phase);
             } else if (parsed.type === 'done') {
               fullPRD = parsed.data?.prd || fullPRD;
-              onDone?.(fullPRD);
+              prdMetadata = parsed.data?.metadata || null;
+              onDone?.(fullPRD, prdMetadata);
             } else if (parsed.type === 'error') {
               throw new Error(parsed.data?.message || 'PRD generation error');
             }
@@ -430,7 +448,7 @@ export async function generatePRD(
       }
     }
 
-    return fullPRD;
+    return { prd: fullPRD, metadata: prdMetadata };
   } catch (err) {
     onError?.(err instanceof Error ? err : new Error('Unknown error'));
     throw err;
@@ -453,11 +471,18 @@ export interface FixedFile {
   fixes: string[];
 }
 
-export async function fixCode(files: FileToFix[]): Promise<{ files: FixedFile[]; error?: string }> {
+export async function fixCode(
+  files: FileToFix[],
+  options?: {
+    strict_scope?: boolean;
+    allowed_paths?: string[];
+    intent?: string;
+  }
+): Promise<{ files: FixedFile[]; error?: string; integrityErrors?: string[] }> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error('Not authenticated');
 
-  console.log(`[fixCode] Enviando ${files.length} arquivos para correção via IA`);
+  console.log(`[fixCode] Enviando ${files.length} arquivos para correção via IA | StrictScope: ${options?.strict_scope || false}`);
 
   try {
     const response = await fetch(
@@ -468,24 +493,36 @@ export async function fixCode(files: FileToFix[]): Promise<{ files: FixedFile[];
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ files }),
+        body: JSON.stringify({
+          files,
+          strict_scope: options?.strict_scope,
+          allowed_paths: options?.allowed_paths,
+          intent: options?.intent
+        }),
       }
     );
 
     if (!response.ok) {
       const err = await response.json();
       console.error('[fixCode] Erro:', err);
-      return { files: files.map(f => ({ ...f, wasFixed: false, fixes: [] })), error: err.error };
+      return {
+        files: files.map(f => ({ ...f, wasFixed: false, fixes: [] })),
+        error: err.error,
+        integrityErrors: err.integrityErrors // Passar erros de integridade se houver
+      };
     }
 
     const result = await response.json();
     console.log(`[fixCode] Recebido ${result.files?.length || 0} arquivos corrigidos`);
-    return result;
+    return {
+      files: result.files,
+      integrityErrors: result.integrityErrors
+    };
   } catch (error) {
     console.error('[fixCode] Erro de rede:', error);
-    return { 
-      files: files.map(f => ({ ...f, wasFixed: false, fixes: [] })), 
-      error: error instanceof Error ? error.message : 'Network error' 
+    return {
+      files: files.map(f => ({ ...f, wasFixed: false, fixes: [] })),
+      error: error instanceof Error ? error.message : 'Network error'
     };
   }
 }
@@ -495,7 +532,7 @@ export async function fixCode(files: FileToFix[]): Promise<{ files: FixedFile[];
 export async function getOrganizations() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return [];
-  
+
   try {
     // Abordagem simplificada: buscar apenas orgs onde o usuário é owner
     // (relacionamentos complexos com or() causam erros no Supabase)
@@ -504,35 +541,35 @@ export async function getOrganizations() {
       .select('id, name, slug, owner_user_id, created_at, updated_at')
       .eq('owner_user_id', user.id)
       .order('name');
-    
+
     if (ownedError) {
       console.error('[API] Erro ao buscar orgs do owner:', ownedError);
       return [];
     }
-    
+
     // Buscar orgs onde o usuário é membro (separadamente)
     const { data: memberOrgs, error: memberError } = await supabase
       .from('org_members')
       .select('org_id, orgs(id, name, slug, owner_user_id, created_at, updated_at)')
       .eq('user_id', user.id);
-    
+
     if (memberError) {
       console.warn('[API] Erro ao buscar orgs de membro:', memberError);
       // Retornar apenas as owned se falhar
       return ownedOrgs || [];
     }
-    
+
     // Combinar e deduplicar
     const allOrgs = [...(ownedOrgs || [])];
     const ownedIds = new Set(allOrgs.map(o => o.id));
-    
+
     for (const member of (memberOrgs || [])) {
       const org = member.orgs as any;
       if (org && !ownedIds.has(org.id)) {
         allOrgs.push(org);
       }
     }
-    
+
     return allOrgs.sort((a, b) => a.name.localeCompare(b.name));
   } catch (err) {
     console.error('[API] Erro ao buscar organizações:', err);
@@ -543,7 +580,7 @@ export async function getOrganizations() {
 
 export async function createOrganization(name: string) {
   console.log('[API] createOrganization iniciado:', name);
-  
+
   const { data: { user }, error: userError } = await supabase.auth.getUser();
   if (userError) {
     console.error('[API] Erro ao obter usuário:', userError);
@@ -553,7 +590,7 @@ export async function createOrganization(name: string) {
     console.error('[API] Usuário não encontrado');
     throw new Error('Usuário não autenticado');
   }
-  
+
   console.log('[API] Usuário autenticado:', user.id, user.email);
 
   const slug = name
@@ -562,7 +599,7 @@ export async function createOrganization(name: string) {
     .replace(/(^-|-$)/g, '') + '-' + Math.random().toString(36).substring(2, 8);
 
   console.log('[API] Inserindo org com slug:', slug);
-  
+
   const { data: org, error: orgError } = await supabase
     .from('orgs')
     .insert({
@@ -577,7 +614,7 @@ export async function createOrganization(name: string) {
     console.error('[API] Erro ao criar org:', JSON.stringify(orgError, null, 2));
     throw new Error(`Erro ao criar organização: ${orgError.message || orgError.code || 'RLS policy violation'}`);
   }
-  
+
   console.log('[API] Org criada:', org.id);
 
   console.log('[API] Inserindo membro owner...');
@@ -593,7 +630,7 @@ export async function createOrganization(name: string) {
     console.error('[API] Erro ao inserir membro:', JSON.stringify(memberError, null, 2));
     throw new Error(`Erro ao adicionar membro: ${memberError.message || memberError.code || 'RLS policy violation'}`);
   }
-  
+
   console.log('[API] Membro adicionado com sucesso');
   return org;
 }

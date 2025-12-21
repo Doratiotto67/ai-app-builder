@@ -33,12 +33,12 @@ const IMPORT_NAME_REGEX = /import\s+(?:{([^}]+)}|(\w+))/;
 function resolveImportPath(basePath: string, importPath: string): string {
   // Remover ./ do início se existir
   const cleanImport = importPath.replace(/^\.\//, '');
-  
+
   // Pegar diretório base do arquivo
-  const baseDir = basePath.includes('/') 
+  const baseDir = basePath.includes('/')
     ? basePath.substring(0, basePath.lastIndexOf('/'))
     : '';
-  
+
   // Resolver caminho relativo
   let resolved: string;
   if (importPath.startsWith('../')) {
@@ -53,12 +53,18 @@ function resolveImportPath(basePath: string, importPath: string): string {
   } else {
     resolved = cleanImport;
   }
-  
-  // Adicionar extensão se não tiver
+
+  // Adicionar extensão se não tiver (inteligente: .ts para utils, .tsx para componentes)
   if (!resolved.match(/\.(tsx?|jsx?|css|json)$/)) {
-    resolved += '.tsx';
+    // Arquivos utils/helpers/types devem ser .ts
+    if (resolved.includes('utils') || resolved.includes('helper') || resolved.includes('types') || resolved.includes('constants')) {
+      resolved += '.ts';
+    } else {
+      // Componentes React devem ser .tsx
+      resolved += '.tsx';
+    }
   }
-  
+
   return resolved;
 }
 
@@ -86,7 +92,7 @@ function extractImportName(importStatement: string): string {
  */
 export function validateImports(files: ExtractedFile[]): ImportValidationResult {
   const missingImports: MissingImport[] = [];
-  
+
   // Criar mapa de arquivos existentes (normalizado sem src/ inicial)
   const existingPaths = new Set<string>();
   for (const file of files) {
@@ -97,39 +103,39 @@ export function validateImports(files: ExtractedFile[]): ImportValidationResult 
     existingPaths.add(file.path.replace(/\.(tsx?|jsx?)$/, ''));
     existingPaths.add(normalizedPath.replace(/\.(tsx?|jsx?)$/, ''));
   }
-  
+
   console.log('[validateImports] Arquivos existentes:', Array.from(existingPaths));
-  
+
   for (const file of files) {
     // Apenas processar arquivos JS/TS
     if (!file.path.match(/\.(tsx?|jsx?)$/)) continue;
-    
+
     // Encontrar todos os imports relativos
     const content = file.content;
     let match;
     IMPORT_REGEX.lastIndex = 0;
-    
+
     while ((match = IMPORT_REGEX.exec(content)) !== null) {
       const importPath = match[0];
       const relativePath = match[1];
-      
+
       // Ignorar imports de pacotes (não relativos)
       if (!relativePath.startsWith('.')) continue;
-      
+
       // Resolver o caminho do import
       const resolvedPath = resolveImportPath(file.path, relativePath);
       const resolvedWithoutExt = resolvedPath.replace(/\.(tsx?|jsx?)$/, '');
-      
+
       // Verificar se existe (com ou sem extensão)
-      const exists = existingPaths.has(resolvedPath) || 
-                     existingPaths.has(resolvedWithoutExt) ||
-                     existingPaths.has(`src/${resolvedPath}`) ||
-                     existingPaths.has(`src/${resolvedWithoutExt}`);
-      
+      const exists = existingPaths.has(resolvedPath) ||
+        existingPaths.has(resolvedWithoutExt) ||
+        existingPaths.has(`src/${resolvedPath}`) ||
+        existingPaths.has(`src/${resolvedWithoutExt}`);
+
       if (!exists) {
         const importedName = extractImportName(importPath);
         console.log(`[validateImports] Import faltante: ${importedName} em ${file.path} → ${resolvedPath}`);
-        
+
         missingImports.push({
           sourceFile: file.path,
           importPath: relativePath,
@@ -139,7 +145,7 @@ export function validateImports(files: ExtractedFile[]): ImportValidationResult 
       }
     }
   }
-  
+
   return {
     valid: missingImports.length === 0,
     missingImports,
@@ -152,19 +158,44 @@ export function validateImports(files: ExtractedFile[]): ImportValidationResult 
 export function generateComponentStub(componentName: string, path: string): ExtractedFile {
   // Capitalizar nome do componente
   const name = componentName.charAt(0).toUpperCase() + componentName.slice(1);
-  
+
   // Determinar tipo baseado no path
   let stubType = 'feature';
-  if (path.includes('/layout/') || ['Header', 'Footer', 'Sidebar', 'Navbar'].some(n => name.includes(n))) {
+  if (path.includes('utils') || path.includes('helper') || path.includes('lib')) {
+    stubType = 'utils';
+  } else if (path.includes('/layout/') || ['Header', 'Footer', 'Sidebar', 'Navbar'].some(n => name.includes(n))) {
     stubType = 'layout';
   } else if (path.includes('/ui/') || ['Button', 'Card', 'Input', 'Modal'].some(n => name.includes(n))) {
     stubType = 'ui';
   }
-  
+
   // Gerar conteúdo baseado no tipo
   let content: string;
-  
-  if (stubType === 'layout') {
+  let isTypeScript = false;
+
+  if (stubType === 'utils') {
+    // Stub para arquivos utils (sempre .ts, não .tsx)
+    isTypeScript = true;
+    content = `// ${path} - Auto-generated utility stub
+import { type ClassValue, clsx } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+/**
+ * Combina classes CSS com Tailwind CSS
+ */
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+/**
+ * Formata uma data para exibição
+ */
+export function formatDate(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
+}
+`;
+  } else if (stubType === 'layout') {
     content = `// ${path} - Auto-generated stub
 import { ${name.includes('Header') ? 'Menu' : name.includes('Footer') ? 'Github' : 'Layout'} } from 'lucide-react';
 
@@ -228,11 +259,11 @@ export function ${name}() {
 export default ${name};
 `;
   }
-  
+
   return {
-    path: path.replace(/\.(jsx?)$/, '.tsx'), // Garantir extensão .tsx
+    path: isTypeScript ? path.replace(/\.(tsx?|jsx?)$/, '.ts') : path.replace(/\.(jsx?)$/, '.tsx'),
     content,
-    language: 'tsx',
+    language: isTypeScript ? 'typescript' : 'tsx',
   };
 }
 
@@ -245,15 +276,15 @@ export function validateAndCompleteFiles(files: ExtractedFile[]): {
   validation: ImportValidationResult;
 } {
   const validation = validateImports(files);
-  
+
   if (validation.valid) {
     return { files, stubsGenerated: 0, validation };
   }
-  
+
   // Gerar stubs para imports faltantes (evitar duplicatas)
   const generatedPaths = new Set<string>();
   const stubs: ExtractedFile[] = [];
-  
+
   for (const missing of validation.missingImports) {
     if (!generatedPaths.has(missing.suggestedPath)) {
       generatedPaths.add(missing.suggestedPath);
@@ -261,7 +292,7 @@ export function validateAndCompleteFiles(files: ExtractedFile[]): {
       console.log(`[validateAndCompleteFiles] Stub gerado: ${missing.suggestedPath}`);
     }
   }
-  
+
   return {
     files: [...files, ...stubs],
     stubsGenerated: stubs.length,

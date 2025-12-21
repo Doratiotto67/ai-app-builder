@@ -111,6 +111,27 @@ export interface AgentEvent {
   payload: Record<string, unknown>;
 }
 
+export type AgentLogType = 'chat-stream' | 'fix-code' | 'generate-prd' | 'analyze-image' | 'save-file';
+export type StatusCategory = 'success' | 'client_error' | 'server_error' | 'unknown';
+
+export interface AgentLog {
+  id: string;
+  project_id: string | null;
+  user_id: string | null;
+  agent_type: AgentLogType;
+  status_code: number;
+  status_category: StatusCategory;
+  error_code: string | null;
+  error_message: string | null;
+  error_details: Record<string, unknown> | null;
+  execution_time_ms: number | null;
+  tokens_used: number | null;
+  model_used: string | null;
+  request_summary: string | null;
+  files_count: number | null;
+  created_at: string;
+}
+
 export interface BuildRun {
   id: string;
   project_id: string;

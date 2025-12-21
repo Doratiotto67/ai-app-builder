@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useIDEStore } from '@/stores/ide-store';
 import { useWebContainer } from '@/lib/webcontainer';
 import { Button } from '@/components/ui/button';
@@ -9,16 +9,24 @@ import {
   AlertCircle,
   Play,
   Trash2,
+  MousePointerClick,
+  RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { previewLog } from '@/lib/debug/logger';
 import { PreviewHeader, type DeviceType } from './preview-header';
 
-export function PreviewPanel() {
-  const { previewUrl, setPreviewUrl, refreshPreview, files } = useIDEStore();
+interface PreviewPanelProps {
+  isVisualEditMode?: boolean;
+  onComponentSelect?: (filePath: string) => void;
+}
+
+export function PreviewPanel({ isVisualEditMode = false, onComponentSelect }: PreviewPanelProps) {
+  const { previewUrl, setPreviewUrl, refreshPreview, previewKey, files, currentProject } = useIDEStore();
   const [device, setDevice] = useState<DeviceType>('desktop');
   const [urlInput, setUrlInput] = useState('/');
   const [manualUrl, setManualUrl] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [iframeError, setIframeError] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const {
@@ -29,13 +37,20 @@ export function PreviewPanel() {
     updateFile,
   } = useWebContainer({
     onServerReady: (url) => {
+      console.log('[PreviewPanel] ✅ Server ready:', url);
       setPreviewUrl(url);
+      setManualUrl(null);
+      setIframeError(null);
     },
     onTerminalOutput: (data) => {
-      console.log('[WebContainer]', data);
+      // Detectar erros críticos no output do terminal
+      if (data.includes('Error:') || data.includes('error:')) {
+        console.warn('[WebContainer Terminal]', data);
+      }
     },
     onError: (err) => {
       console.error('[WebContainer Error]', err);
+      setIframeError(err.message);
     },
   });
 
@@ -43,9 +58,21 @@ export function PreviewPanel() {
   const lastSyncedFilesRef = useRef<string>('');
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousFilesLengthRef = useRef<number>(0);
+  const initAttemptRef = useRef<number>(0);
 
   // DERIVADO: URL ativa (declarado cedo para uso nos useEffects)
   const activeUrl = manualUrl || containerUrl || previewUrl;
+
+  // Debug: Logar mudanças de estado importantes
+  useEffect(() => {
+    console.log('[PreviewPanel] Estado atualizado:', {
+      status,
+      activeUrl: activeUrl?.substring(0, 50),
+      filesCount: files.length,
+      containerUrl: containerUrl?.substring(0, 50),
+      previewUrl: previewUrl?.substring(0, 50)
+    });
+  }, [status, activeUrl, files.length, containerUrl, previewUrl]);
 
   // RESET: Quando projeto muda (detectado pelo reset de files para vazio e depois populado)
   useEffect(() => {
@@ -53,24 +80,146 @@ export function PreviewPanel() {
     if (files.length === 0 && previousFilesLengthRef.current > 0) {
       console.log('[PreviewPanel] 🔄 Projeto reset detectado, limpando estado de sync');
       lastSyncedFilesRef.current = '';
+      initAttemptRef.current = 0;
     }
     previousFilesLengthRef.current = files.length;
   }, [files.length]);
+
+  // VISUAL EDIT: Escutar mensagens do iframe
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'COMPONENT_CLICKED') {
+        const { componentInfo } = event.data;
+        console.log('[VisualEdit] Componente clicado:', componentInfo);
+
+        // Mapeamento inteligente para encontrar o arquivo correto
+        const targetFile = findBestMatchingFile(componentInfo, files);
+        console.log('[VisualEdit] Arquivo mapeado:', targetFile);
+        onComponentSelect?.(targetFile);
+      }
+    };
+
+    function findBestMatchingFile(
+      info: { tagName?: string; className?: string; id?: string; innerText?: string; dataFile?: string; dataSourceFile?: string },
+      projectFiles: typeof files
+    ): string {
+      // 0. PRIORIDADE MÁXIMA: data-source-file (injetado pelo LLM)
+      if (info.dataSourceFile) {
+        const exists = projectFiles.some(f => f.path === info.dataSourceFile);
+        if (exists) {
+          return info.dataSourceFile;
+        }
+      }
+
+      // 1. data-file explícito
+      if (info.dataFile) {
+        return info.dataFile;
+      }
+
+      // 2. Criar lista de candidatos com pontuação
+      const candidates: { path: string; score: number; reason: string }[] = [];
+      const tag = (info.tagName || '').toLowerCase();
+      const cls = (info.className || '').toLowerCase();
+      const id = (info.id || '').toLowerCase();
+      const text = (info.innerText || '').toLowerCase().slice(0, 200);
+
+      // Extrair palavras-chave
+      const keywords = new Set<string>();
+      cls.split(/[\s-]+/).forEach(w => w.length > 2 && keywords.add(w));
+      id.split(/[\s-_]+/).forEach(w => w.length > 2 && keywords.add(w));
+      text.split(/\s+/).slice(0, 5).forEach(w => {
+        const clean = w.replace(/[^a-záéíóúãõâêîôûàèìòù]/gi, '');
+        if (clean.length > 3) keywords.add(clean);
+      });
+
+      // Pontuar cada arquivo
+      for (const file of projectFiles) {
+        const filePath = file.path.toLowerCase();
+        const fileName = filePath.split('/').pop()?.replace(/\.(tsx|jsx|ts|js)$/, '') || '';
+        const content = (file.content_text || '').toLowerCase();
+        let score = 0;
+        const reasons: string[] = [];
+
+        // Match de nome de arquivo com keywords
+        for (const kw of keywords) {
+          if (fileName.includes(kw) || kw.includes(fileName)) {
+            score += 30;
+            reasons.push(`filename match: ${kw}`);
+          }
+        }
+
+        // Layout components
+        const layoutComponents = ['header', 'footer', 'nav', 'sidebar', 'hero', 'section', 'layout'];
+        for (const comp of layoutComponents) {
+          if ((cls.includes(comp) || tag === comp) && (fileName.includes(comp) || filePath.includes(comp))) {
+            score += 60;
+            reasons.push(`layout match: ${comp}`);
+          }
+        }
+
+        // Penalizar App.tsx
+        if (fileName === 'app') {
+          score -= 30;
+        }
+
+        if (score !== 0) {
+          candidates.push({ path: file.path, score, reason: reasons.join(', ') });
+        }
+      }
+
+      candidates.sort((a, b) => b.score - a.score);
+
+      if (candidates.length > 0 && candidates[0].score > 0) {
+        return candidates[0].path;
+      }
+
+      // Fallbacks
+      if (tag === 'header' || tag === 'nav' || cls.includes('header') || cls.includes('nav')) {
+        return projectFiles.find(f => f.path.toLowerCase().includes('header'))?.path || 'src/components/Header.tsx';
+      }
+      if (tag === 'footer' || cls.includes('footer')) {
+        return projectFiles.find(f => f.path.toLowerCase().includes('footer'))?.path || 'src/components/Footer.tsx';
+      }
+      if (cls.includes('hero') || cls.includes('banner')) {
+        return projectFiles.find(f => f.path.toLowerCase().includes('hero'))?.path || 'src/components/Hero.tsx';
+      }
+
+      return 'src/App.tsx';
+    }
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [files, onComponentSelect]);
+
+  // VISUAL EDIT: Enviar mensagem para o iframe quando modo muda
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    if (!iframe?.contentWindow) return;
+
+    iframe.contentWindow.postMessage(
+      { type: 'TOGGLE_VISUAL_EDIT', enabled: isVisualEditMode },
+      '*'
+    );
+    console.log('[PreviewPanel] Enviado TOGGLE_VISUAL_EDIT:', isVisualEditMode);
+  }, [isVisualEditMode]);
 
   // AUTO-SYNC: Sincroniza arquivos quando eles mudam no store (com debounce)
   useEffect(() => {
     if (status !== 'ready' || files.length === 0) return;
 
-    // Criar hash simples dos arquivos para detectar mudanças reais (inclui CONTEÚDO, não só tamanho)
-    const filesHash = files.map(f => `${f.path}:${(f.content_text || '').slice(0, 100)}`).join('|');
-    
+    // Criar hash para detectar mudanças reais
+    const filesHash = files.map(f => {
+      const content = f.content_text || '';
+      const sample = content.slice(0, 50) + content.slice(Math.max(0, content.length / 2 - 25), content.length / 2 + 25) + content.slice(-50);
+      return `${f.path}:${content.length}:${sample}`;
+    }).join('|');
+
     // Só sincronizar se realmente mudou
     if (filesHash === lastSyncedFilesRef.current) {
-      previewLog.info('⏭️ Arquivos não mudaram, pulando sync');
       return;
     }
 
-    // Debounce para evitar múltiplas sincronizações em sequência
+    // Debounce
     if (syncTimeoutRef.current) {
       clearTimeout(syncTimeoutRef.current);
     }
@@ -78,7 +227,7 @@ export function PreviewPanel() {
     syncTimeoutRef.current = setTimeout(async () => {
       lastSyncedFilesRef.current = filesHash;
       console.log(`[PreviewPanel] 📁 Sincronizando ${files.length} arquivos...`);
-      
+
       let syncedCount = 0;
       for (const file of files) {
         try {
@@ -93,25 +242,24 @@ export function PreviewPanel() {
           console.error(`[WebContainer] Erro ao sincronizar ${file.path}:`, err);
         }
       }
-      
+
       console.log(`[PreviewPanel] ✅ ${syncedCount} arquivos sincronizados`);
-      
-      // FORÇAR REFRESH do iframe após sincronização bem-sucedida
+
+      // Forçar refresh do iframe após sincronização
       if (iframeRef.current && activeUrl && syncedCount > 0) {
         console.log('[PreviewPanel] 🔄 Forçando refresh do iframe');
-        const currentSrc = iframeRef.current.src;
-        // Técnica para reload suave sem piscar branco se possível
         try {
-           if (iframeRef.current.contentWindow) {
-             iframeRef.current.contentWindow.location.reload();
-           } else {
-             iframeRef.current.src = currentSrc;
-           }
+          if (iframeRef.current.contentWindow) {
+            iframeRef.current.contentWindow.location.reload();
+          } else {
+            const currentSrc = iframeRef.current.src;
+            iframeRef.current.src = currentSrc;
+          }
         } catch (e) {
-           iframeRef.current.src = currentSrc;
+          iframeRef.current.src = iframeRef.current.src;
         }
       }
-    }, 500); // Espera 500ms antes de sincronizar
+    }, 800); // Reduzido de 1000ms para resposta mais rápida
 
     return () => {
       if (syncTimeoutRef.current) {
@@ -124,24 +272,18 @@ export function PreviewPanel() {
   const hasAutoStartedRef = useRef(false);
   const isStartingRef = useRef(false);
   const autoStartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  
+
   useEffect(() => {
-    // Limpar timeout se o componente desmontar
     return () => {
       if (autoStartTimeoutRef.current) {
         clearTimeout(autoStartTimeoutRef.current);
       }
     };
   }, []);
-  
+
   useEffect(() => {
-    // Iniciar preview se:
-    // 1. Status está idle (não iniciado)
-    // 2. Não iniciamos ainda
-    // 3. Não estamos no meio de iniciar
+    // Iniciar preview se status está idle e não iniciamos ainda
     if (status === 'idle' && !hasAutoStartedRef.current && !isStartingRef.current) {
-      // Se temos arquivos, iniciar imediatamente
-      // Se não temos, esperar um pouco (dando tempo para o Supabase retornar)
       if (files.length > 0) {
         console.log(`[PreviewPanel] 🚀 Auto-iniciando preview com ${files.length} arquivos`);
         hasAutoStartedRef.current = true;
@@ -175,28 +317,77 @@ export function PreviewPanel() {
     mobile: { width: '375px', height: '667px' },
   };
 
-  const handleRefresh = () => {
-    if (iframeRef.current && activeUrl) {
-      iframeRef.current.src = activeUrl + urlInput;
-    }
+  const handleRefresh = useCallback(() => {
+    console.log('[PreviewPanel] 🔄 handleRefresh chamado');
     refreshPreview();
-  };
 
-  const handleStartPreview = async () => {
-    // Passar arquivos do store para serem mergeados com projeto base
+    if (iframeRef.current && activeUrl) {
+      try {
+        if (iframeRef.current.contentWindow) {
+          iframeRef.current.contentWindow.location.reload();
+        }
+      } catch (e) {
+        const newSrc = activeUrl + urlInput + '?r=' + Date.now();
+        iframeRef.current.src = newSrc;
+      }
+    }
+  }, [refreshPreview, activeUrl, urlInput]);
+
+  const handleForceRestart = useCallback(async () => {
+    console.log('[PreviewPanel] ⚡ Reinicialização forçada solicitada');
+
+    lastSyncedFilesRef.current = '';
+    hasAutoStartedRef.current = false;
+    isStartingRef.current = false;
+    initAttemptRef.current = 0;
+    setIframeError(null);
+
+    await handleStartPreview();
+  }, []);
+
+  const handleStartPreview = useCallback(async () => {
+    console.log('[PreviewPanel] 🎬 handleStartPreview chamado');
+    setIsLoading(true);
+    setIframeError(null);
+
     const fileList = files.map((f) => ({
       path: f.path,
       content: f.content_text || '',
     }));
 
-    await initProject(fileList);
-  };
+    try {
+      await initProject(fileList, currentProject?.id);
+    } catch (err) {
+      console.error('[PreviewPanel] Erro ao iniciar projeto:', err);
+      setIframeError(err instanceof Error ? err.message : 'Erro desconhecido');
+    }
+  }, [files, initProject, currentProject?.id]);
+
+  // Handler para quando o iframe carrega
+  const handleIframeLoad = useCallback(() => {
+    console.log('[PreviewPanel] ✅ iframe carregou:', activeUrl);
+    setIsLoading(false);
+    setIframeError(null);
+  }, [activeUrl]);
+
+  // Handler para erros do iframe
+  const handleIframeError = useCallback((e: React.SyntheticEvent<HTMLIFrameElement>) => {
+    console.error('[PreviewPanel] ❌ iframe erro:', e);
+    setIsLoading(false);
+    setIframeError('Falha ao carregar o preview');
+  }, []);
+
+  // Determinar o que mostrar
+  const shouldShowIframe = activeUrl && (status === 'ready' || status === 'starting');
+  const shouldShowLoading = status === 'booting' || status === 'installing' || status === 'starting';
+  const shouldShowIdle = status === 'idle';
+  const shouldShowError = status === 'error' || !!iframeError;
 
   return (
     <div className="h-full flex flex-col bg-neutral-900 relative">
-      <PreviewHeader 
-        device={device} 
-        setDevice={setDevice} 
+      <PreviewHeader
+        device={device}
+        setDevice={setDevice}
         urlInput={urlInput}
         setUrlInput={setUrlInput}
         status={status}
@@ -206,32 +397,54 @@ export function PreviewPanel() {
 
       {/* Preview Content */}
       <div className="flex-1 flex items-center justify-center p-4 bg-neutral-950/50 overflow-auto">
-        {status === 'error' && error ? (
+        {shouldShowError && (error || iframeError) ? (
           <div className="text-center text-red-400 max-w-md bg-red-950/20 p-8 rounded-xl border border-red-500/20">
             <AlertCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
             <h3 className="text-lg font-medium mb-2">Erro no WebContainer</h3>
-            <p className="text-sm opacity-80 mb-6">{error.message}</p>
-            <Button variant="outline" size="sm" onClick={handleStartPreview} className="border-red-500/30 hover:bg-red-500/10 hover:text-red-300">
+            <p className="text-sm opacity-80 mb-6">{error?.message || iframeError}</p>
+            <Button variant="outline" size="sm" onClick={handleForceRestart} className="border-red-500/30 hover:bg-red-500/10 hover:text-red-300">
+              <RefreshCw className="h-4 w-4 mr-2" />
               Reiniciar Ambiente
             </Button>
           </div>
-        ) : activeUrl && status === 'ready' ? (
+        ) : shouldShowIframe ? (
           <div
             className={cn(
-              'bg-white rounded-lg overflow-hidden shadow-2xl transition-all duration-300 ring-1 ring-white/10',
+              'bg-white rounded-lg overflow-hidden shadow-2xl transition-all duration-300 ring-1 ring-white/10 relative',
               device !== 'desktop' && 'border-8 border-neutral-800'
             )}
             style={deviceConfig[device]}
           >
+            {/* Loading overlay */}
+            {isLoading && (
+              <div className="absolute inset-0 bg-neutral-950/80 flex items-center justify-center z-10">
+                <div className="text-center">
+                  <Loader2 className="h-8 w-8 text-white/50 animate-spin mx-auto mb-2" />
+                  <p className="text-sm text-zinc-400">Carregando preview...</p>
+                </div>
+              </div>
+            )}
+
             <iframe
+              key={previewKey}
               ref={iframeRef}
               src={activeUrl + urlInput}
               className="w-full h-full"
               title="Preview"
               allow="cross-origin-isolated"
+              onLoad={handleIframeLoad}
+              onError={handleIframeError}
             />
+
+            {/* Visual Edit Mode Banner */}
+            {isVisualEditMode && (
+              <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-cyan-600 text-white text-xs px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-lg pointer-events-none animate-pulse">
+                <MousePointerClick className="h-3.5 w-3.5" />
+                Clique em um componente no preview
+              </div>
+            )}
           </div>
-        ) : status === 'idle' ? (
+        ) : shouldShowIdle ? (
           <div className="text-center text-muted-foreground max-w-md">
             <div className="relative mb-6 mx-auto w-16 h-16 flex items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 ring-1 ring-white/10">
               <Play className="h-8 w-8 text-white/80 ml-1" />
@@ -248,7 +461,7 @@ export function PreviewPanel() {
               Iniciar Servidor
             </Button>
           </div>
-        ) : (
+        ) : shouldShowLoading ? (
           <div className="text-center text-muted-foreground max-w-sm">
             {/* Progress Circle */}
             <div className="relative w-32 h-32 mx-auto mb-8">
@@ -281,21 +494,21 @@ export function PreviewPanel() {
                   strokeDasharray={264}
                   strokeDashoffset={
                     status === 'booting' ? 264 * 0.7 :
-                    status === 'installing' ? 264 * 0.4 :
-                    status === 'starting' ? 264 * 0.1 : 264
+                      status === 'installing' ? 264 * 0.4 :
+                        status === 'starting' ? 264 * 0.1 : 264
                   }
                   className="transition-all duration-700 ease-out"
                 />
               </svg>
               {/* Status Icon */}
               <div className="absolute inset-0 flex items-center justify-center">
-                 {status === 'installing' ? (
-                   <div className="animate-bounce">📦</div>
-                 ) : status === 'starting' ? (
-                   <div className="animate-pulse">⚡</div>
-                 ) : (
-                   <Loader2 className="h-8 w-8 text-white/50 animate-spin" />
-                 )}
+                {status === 'installing' ? (
+                  <div className="animate-bounce">📦</div>
+                ) : status === 'starting' ? (
+                  <div className="animate-pulse">⚡</div>
+                ) : (
+                  <Loader2 className="h-8 w-8 text-white/50 animate-spin" />
+                )}
               </div>
             </div>
 
@@ -305,30 +518,53 @@ export function PreviewPanel() {
               {status === 'starting' && 'Iniciando servidor...'}
             </h3>
             <p className="text-xs text-zinc-500 uppercase tracking-wider font-medium">
-               {status === 'booting' && 'WebContainer'}
-               {status === 'installing' && 'NPM Install'}
-               {status === 'starting' && 'Vite Dev'}
+              {status === 'booting' && 'WebContainer'}
+              {status === 'installing' && 'NPM Install'}
+              {status === 'starting' && 'Vite Dev'}
             </p>
+          </div>
+        ) : (
+          // Fallback - não deveria chegar aqui, mas evita tela branca
+          <div className="text-center text-muted-foreground">
+            <Loader2 className="h-8 w-8 text-white/50 animate-spin mx-auto mb-4" />
+            <p className="text-sm text-zinc-400">Preparando ambiente...</p>
+            <p className="text-xs text-zinc-600 mt-2">Status: {status}</p>
           </div>
         )}
       </div>
 
-      {/* Botão Limpar Cache - Canto inferior esquerdo */}
-      <div className="absolute bottom-4 left-4 z-10 opacity-0 hover:opacity-100 transition-opacity">
+      {/* Botões de Ação - Canto inferior esquerdo */}
+      <div className="absolute bottom-4 left-4 z-10 flex gap-2">
+        {/* Botão Reiniciar WebContainer */}
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
-          onClick={() => {
-            if (confirm('Isso vai limpar o cache do projeto e recarregar a página. Continuar?')) {
-              localStorage.removeItem('app-builder-store');
-              window.location.reload();
-            }
-          }}
-          className="text-xs text-zinc-600 hover:text-red-400 hover:bg-red-500/5 gap-1.5"
+          onClick={handleForceRestart}
+          disabled={status === 'booting' || status === 'installing' || status === 'starting'}
+          className="text-xs bg-zinc-900/80 hover:bg-violet-500/20 border-violet-500/30 text-violet-300 hover:text-violet-200 gap-1.5"
+          title="Reiniciar WebContainer (força refresh completo)"
         >
-          <Trash2 className="h-3 w-3" />
-          Reset Cache
+          <Play className="h-3 w-3" />
+          Reiniciar Preview
         </Button>
+
+        {/* Botão Limpar Cache - menos visível */}
+        <div className="opacity-0 hover:opacity-100 transition-opacity">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              if (confirm('Isso vai limpar o cache do projeto e recarregar a página. Continuar?')) {
+                localStorage.removeItem('app-builder-store');
+                window.location.reload();
+              }
+            }}
+            className="text-xs text-zinc-600 hover:text-red-400 hover:bg-red-500/5 gap-1.5"
+          >
+            <Trash2 className="h-3 w-3" />
+            Reset Cache
+          </Button>
+        </div>
       </div>
     </div>
   );

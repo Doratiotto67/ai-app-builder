@@ -71,7 +71,7 @@ interface IDEState {
   setTerminalOpen: (open: boolean) => void;
   activePanel: 'files' | 'search' | 'git' | 'extensions';
   setActivePanel: (panel: 'files' | 'search' | 'git' | 'extensions') => void;
-  
+
   // Editor collapse
   isEditorCollapsed: boolean;
   setEditorCollapsed: (collapsed: boolean) => void;
@@ -80,6 +80,13 @@ interface IDEState {
   // Theme
   theme: 'light' | 'dark' | 'system';
   setTheme: (theme: 'light' | 'dark' | 'system') => void;
+
+  // Visual Edits (Surgical Mode)
+  isVisualEditMode: boolean;
+  setVisualEditMode: (mode: boolean) => void;
+  toggleVisualEditMode: () => void;
+  selectedTargetFile: string | null; // Path do arquivo selecionado para edição
+  setSelectedTargetFile: (path: string | null) => void;
 }
 
 function buildFileTree(files: ProjectFile[]): FileTreeNode[] {
@@ -135,10 +142,10 @@ export const useIDEStore = create<IDEState>()(
           const current = get().currentProject;
           // Se mudou de projeto, limpar todos os dados do projeto anterior
           if (project?.id !== current?.id) {
-            storeLog.info('🔄 Mudando de projeto', { 
-              from: current?.name || 'nenhum', 
+            storeLog.info('🔄 Mudando de projeto', {
+              from: current?.name || 'nenhum',
               to: project?.name || 'nenhum',
-              projectId: project?.id 
+              projectId: project?.id
             });
             set({
               currentProject: project,
@@ -267,7 +274,7 @@ export const useIDEStore = create<IDEState>()(
         setTerminalOpen: (open) => set({ terminalOpen: open }),
         activePanel: 'files',
         setActivePanel: (panel) => set({ activePanel: panel }),
-        
+
         // Editor collapse
         isEditorCollapsed: false,
         setEditorCollapsed: (collapsed) => set({ isEditorCollapsed: collapsed }),
@@ -276,6 +283,13 @@ export const useIDEStore = create<IDEState>()(
         // Theme
         theme: 'dark',
         setTheme: (theme) => set({ theme }),
+
+        // Visual Edits (Surgical Mode)
+        isVisualEditMode: false,
+        setVisualEditMode: (mode) => set({ isVisualEditMode: mode }),
+        toggleVisualEditMode: () => set((state) => ({ isVisualEditMode: !state.isVisualEditMode })),
+        selectedTargetFile: null,
+        setSelectedTargetFile: (path) => set({ selectedTargetFile: path }),
       })),
       {
         name: 'app-builder-store',

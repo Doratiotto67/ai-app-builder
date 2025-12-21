@@ -119,54 +119,61 @@ export function ThreadMessage({
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, ease: 'easeOut' }}
-      className={cn('chat-message px-4 py-4 group/msg', className)}
+      className={cn('chat-message px-4 py-6 group/msg', className)}
     >
-      <div className="flex items-start gap-4">
-        {/* Avatar Area with Glow */}
-        <div className="relative shrink-0">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 via-fuchsia-500 to-pink-500 p-[1px] shadow-[0_0_15px_-5px_rgba(139,92,246,0.5)]">
-            <div className="w-full h-full rounded-full bg-zinc-900 flex items-center justify-center">
-              <Bot className="h-4.5 w-4.5 text-white animate-pulse-subtle" />
+      <div className="assistant-message-container">
+        {/* Avatar Area with Glow - Fixed Position */}
+        <div className="assistant-avatar-fixed">
+          <div className="relative shrink-0">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 via-fuchsia-500 to-pink-500 p-[1.5px] shadow-[0_0_20px_-5px_rgba(139,92,246,0.6)] animate-glow-pulse">
+              <div className="w-full h-full rounded-[10px] bg-zinc-900 flex items-center justify-center">
+                <Bot className="h-5 w-5 text-white animate-pulse-subtle" />
+              </div>
             </div>
+            {isStreaming && (
+              <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-violet-500 border-2 border-zinc-950 rounded-full shadow-lg" />
+            )}
           </div>
-          {isStreaming && (
-            <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-violet-500 border-2 border-zinc-900 rounded-full animate-pulse" />
-          )}
         </div>
 
         {/* Main Content Area */}
-        <div className="flex-1 min-w-0 space-y-3">
+        <div className="flex-1 min-w-0 space-y-4">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-[12px] font-bold text-zinc-100/90 tracking-wider uppercase">Assistente</span>
+          </div>
+
           {/* Steps (Thinking process) */}
           {steps && steps.length > 0 && (
-             <div className="mb-2">
-               <StepViewer steps={steps} />
-             </div>
+            <div className="mb-4">
+              <StepViewer steps={steps} />
+            </div>
           )}
 
           {/* Text Content */}
-          <div className="prose prose-sm prose-invert max-w-none prose-p:leading-relaxed prose-pre:my-0">
-            <div className="text-zinc-200 text-[14.5px] font-normal leading-relaxed tracking-tight prose prose-sm prose-invert max-w-none">
+          <div className="prose prose-sm prose-invert max-w-none prose-pre:my-0">
+            <div className="text-zinc-200 text-[15px] font-normal leading-relaxed tracking-tight selection:bg-violet-500/30">
               <ReactMarkdown
                 components={{
+                  hr: () => <hr className="my-6 border-zinc-800/50" />,
                   pre: () => null,
                   code: ({ children, className }) => {
                     const isCodeBlock = className?.includes('language-');
                     if (isCodeBlock) return null;
                     return (
-                      <code className="bg-zinc-800/80 text-violet-300 px-1.5 py-0.5 rounded-md border border-violet-500/10 font-mono text-[12px] align-middle tracking-tight shadow-sm mx-0.5">
+                      <code className="bg-zinc-800/60 text-violet-300 px-1.5 py-0.5 rounded-md border border-white/5 font-mono text-[12.5px] align-middle tracking-tight shadow-sm mx-0.5">
                         {children}
                       </code>
                     );
                   },
-                  p: ({ children }) => <div className="mb-3 text-[14.5px] leading-7 text-zinc-300 last:mb-0">{children}</div>,
-                  ul: ({ children }) => <ul className="space-y-1.5 my-3 pl-1">{children}</ul>,
+                  p: ({ children }) => <p className="mb-4 last:mb-0 line-height-[1.6]">{children}</p>,
+                  ul: ({ children }) => <ul className="space-y-2 my-4 pl-1">{children}</ul>,
                   li: ({ children }) => (
-                    <li className="text-[14px] leading-relaxed text-zinc-300 flex gap-2 items-start">
-                      <span className="shrink-0 mt-2 w-1 h-1 rounded-full bg-zinc-500 opacity-60" />
+                    <li className="text-[14.5px] leading-relaxed text-zinc-300 flex gap-3 items-start group/li">
+                      <span className="shrink-0 mt-2.5 w-1.5 h-1.5 rounded-full bg-violet-500/40 group-hover/li:bg-violet-500 transition-colors" />
                       <div>{children}</div>
                     </li>
                   ),
-                  strong: ({ children }) => <span className="font-semibold text-zinc-100">{children}</span>,
+                  strong: ({ children }) => <span className="font-bold text-white tracking-wide">{children}</span>,
                 }}
               >
                 {hasCode ? summary : content}
@@ -176,36 +183,36 @@ export function ThreadMessage({
 
           {/* Cursor */}
           {isStreaming && (
-            <motion.div 
+            <motion.div
               animate={{ opacity: [1, 0, 1] }}
               transition={{ repeat: Infinity, duration: 1 }}
-              className="inline-block w-1.5 h-4 bg-violet-500 rounded-full ml-1 align-middle shadow-[0_0_8px_rgba(139,92,246,0.6)]" 
+              className="inline-block w-1.5 h-4.5 bg-violet-500 rounded-full ml-1 align-middle shadow-[0_0_12px_rgba(139,92,246,0.8)]"
             />
           )}
 
           {/* File Changes Preview */}
           {files && files.length > 0 && (
-            <div className="mt-4 pt-4 border-t border-zinc-800/50">
+            <div className="mt-8 pt-6 border-t border-zinc-800/30">
               <FileChangePreview files={files} onFileClick={onFileClick} />
             </div>
           )}
 
           {/* Subtle Actions Bar */}
           {!isStreaming && content.length > 20 && (
-            <div className="flex items-center gap-4 mt-4 opacity-0 group-hover/msg:opacity-100 transition-all duration-200">
+            <div className="flex items-center gap-4 mt-6 opacity-0 group-hover/msg:opacity-100 transition-all duration-300 transform translate-y-1 group-hover/msg:translate-y-0">
               <button
                 onClick={handleCopy}
-                className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-500 hover:text-zinc-300 transition-colors bg-zinc-800/50 px-2 py-1 rounded-md border border-zinc-700/50 hover:border-zinc-600"
+                className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-zinc-500 hover:text-zinc-200 transition-all bg-zinc-900/40 hover:bg-zinc-800/60 px-3 py-1.5 rounded-lg border border-zinc-800/50 hover:border-zinc-700 shadow-sm"
               >
                 {copied ? (
                   <>
-                    <Check className="h-3 w-3 text-green-400" />
+                    <Check className="h-3.5 w-3.5 text-green-400" />
                     <span className="text-green-400">Copiado</span>
                   </>
                 ) : (
                   <>
-                    <Copy className="h-3 w-3" />
-                    Copiar
+                    <Copy className="h-3.5 w-3.5" />
+                    Copiar Resposta
                   </>
                 )}
               </button>

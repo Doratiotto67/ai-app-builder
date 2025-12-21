@@ -11,16 +11,16 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { 
-  Plus, 
-  Folder, 
-  Clock, 
-  ArrowRight, 
-  Sparkles, 
-  Loader2, 
-  Eye, 
-  Trash2, 
-  MoreVertical, 
+import {
+  Plus,
+  Folder,
+  Clock,
+  ArrowRight,
+  Sparkles,
+  Loader2,
+  Eye,
+  Trash2,
+  MoreVertical,
   LogOut,
   User,
   Building2,
@@ -50,7 +50,7 @@ function formatDate(dateString: string) {
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  
+
   if (diffDays === 0) return 'Hoje';
   if (diffDays === 1) return 'Ontem';
   if (diffDays < 7) return `${diffDays} dias atrás`;
@@ -96,7 +96,7 @@ export default function ProjectsPage() {
       router.push('/login?next=/projects');
       return;
     }
-    
+
     if (user) {
       loadData();
     }
@@ -106,9 +106,9 @@ export default function ProjectsPage() {
     try {
       setLoading(true);
       console.log('[Projects] Carregando dados para usuário:', user?.email);
-      
+
       // Carregar projetos
-      let projectsData = [];
+      let projectsData: Project[] = [];
       try {
         projectsData = await getProjects();
         console.log('[Projects] Projetos carregados:', projectsData?.length || 0);
@@ -116,9 +116,9 @@ export default function ProjectsPage() {
         console.warn('[Projects] Erro ao carregar projetos (pode ser RLS):', projError);
         // Se falhar, pode ser que não tenha projetos ou RLS bloqueou
       }
-      
+
       // Carregar organizações
-      let orgsData = [];
+      let orgsData: Organization[] = [];
       try {
         orgsData = await getOrganizations();
         console.log('[Projects] Organizações carregadas:', orgsData?.length || 0);
@@ -126,7 +126,7 @@ export default function ProjectsPage() {
         console.warn('[Projects] Erro ao carregar organizações (pode ser RLS):', orgError);
         // Se falhar, vamos criar uma org automaticamente na criação do projeto
       }
-      
+
       setProjects(projectsData || []);
       setOrganizations(orgsData || []);
     } catch (error: unknown) {
@@ -139,12 +139,12 @@ export default function ProjectsPage() {
 
   async function handleCreateProject() {
     if (!newProjectName.trim()) return;
-    
+
     setCreating(true);
     try {
       let orgId = organizations[0]?.id;
       console.log('[Projects] Criando projeto. Org existente:', orgId);
-      
+
       // Se não tem organização, criar uma
       if (!orgId) {
         console.log('[Projects] Nenhuma org encontrada, criando nova...');
@@ -159,7 +159,7 @@ export default function ProjectsPage() {
           throw new Error(`Falha ao criar organização: ${errorMessage}`);
         }
       }
-      
+
       console.log('[Projects] Criando projeto na org:', orgId);
       const project = await createProject(orgId, newProjectName, newProjectDescription || undefined);
       console.log('[Projects] Projeto criado:', project.id);
@@ -177,7 +177,7 @@ export default function ProjectsPage() {
 
   async function handleDeleteProject(projectId: string) {
     if (!confirm('Tem certeza que deseja excluir este projeto? Esta ação não pode ser desfeita.')) return;
-    
+
     setDeletingId(projectId);
     try {
       await deleteProject(projectId);
@@ -198,15 +198,15 @@ export default function ProjectsPage() {
   async function handleDeleteAll() {
     const count = projects.length;
     if (count === 0) return;
-    
+
     if (!confirm(`⚠️ ATENÇÃO: Você está prestes a EXCLUIR PERMANENTEMENTE ${count} projeto(s).\n\nEsta ação NÃO pode ser desfeita.\n\nDigite "EXCLUIR" para confirmar:`)) return;
-    
+
     const confirmation = prompt('Digite "EXCLUIR" para confirmar a exclusão de todos os projetos:');
     if (confirmation !== 'EXCLUIR') {
       alert('Exclusão cancelada. É necessário digitar EXCLUIR para confirmar.');
       return;
     }
-    
+
     setDeletingAll(true);
     try {
       const result = await deleteAllProjects();
@@ -243,7 +243,7 @@ export default function ProjectsPage() {
             </div>
             <span className="font-bold text-lg text-white">AI App Builder</span>
           </Link>
-          
+
           <div className="flex items-center gap-4">
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
               <DialogTrigger asChild>
@@ -277,7 +277,7 @@ export default function ProjectsPage() {
                   <Button variant="outline" onClick={() => setDialogOpen(false)}>
                     Cancelar
                   </Button>
-                  <Button 
+                  <Button
                     onClick={handleCreateProject}
                     disabled={creating || !newProjectName.trim()}
                     className="bg-gradient-to-r from-violet-500 to-fuchsia-500"
@@ -320,13 +320,13 @@ export default function ProjectsPage() {
           <div>
             <h1 className="text-3xl font-bold mb-2 text-white">Seus Projetos</h1>
             <p className="text-muted-foreground">
-              {projects.length === 0 
+              {projects.length === 0
                 ? 'Crie seu primeiro projeto e comece a construir com IA'
                 : `${projects.length} projeto${projects.length !== 1 ? 's' : ''} • Gerencie seus apps`
               }
             </p>
           </div>
-          
+
           {projects.length > 0 && (
             <Button
               variant="outline"
@@ -353,7 +353,7 @@ export default function ProjectsPage() {
               <p className="text-muted-foreground mb-6 text-center max-w-md">
                 Crie seu primeiro projeto e comece a construir aplicações incríveis com inteligência artificial.
               </p>
-              <Button 
+              <Button
                 onClick={() => setDialogOpen(true)}
                 className="bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600"
               >
@@ -365,7 +365,7 @@ export default function ProjectsPage() {
         ) : (
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {/* New Project Card */}
-            <Card 
+            <Card
               className="border-dashed border-neutral-700 hover:border-violet-500/50 bg-neutral-900/30 hover:bg-neutral-900/50 transition-all cursor-pointer h-full group"
               onClick={() => setDialogOpen(true)}
             >
@@ -380,8 +380,8 @@ export default function ProjectsPage() {
 
             {/* Project Cards */}
             {projects.map((project, index) => (
-              <Card 
-                key={project.id} 
+              <Card
+                key={project.id}
                 className="border-neutral-800 bg-neutral-900/50 hover:border-violet-500/50 hover:shadow-lg hover:shadow-violet-500/5 transition-all h-full group overflow-hidden"
               >
                 {/* Mini Preview Area */}
@@ -409,7 +409,7 @@ export default function ProjectsPage() {
                             Abrir
                           </Link>
                         </DropdownMenuItem>
-                        <DropdownMenuItem 
+                        <DropdownMenuItem
                           onClick={() => handleDeleteProject(project.id)}
                           className="text-red-400 focus:text-red-400"
                           disabled={deletingId === project.id}

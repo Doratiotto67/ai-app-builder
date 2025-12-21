@@ -51,6 +51,9 @@ export function IDELayout({ projectId }: IDELayoutProps) {
     isEditorCollapsed,
     toggleEditorCollapsed,
     files,
+    // Visual Edits
+    isVisualEditMode,
+    setSelectedTargetFile,
   } = useIDEStore();
 
   const [mounted, setMounted] = useState(false);
@@ -80,24 +83,24 @@ export function IDELayout({ projectId }: IDELayoutProps) {
       if (!mounted || !projectId) return;
 
       const currentStore = useIDEStore.getState();
-      
+
       // 1. Verificar se é uma troca de projeto
       // Se currentProject é nulo ou tem ID diferente, precisamos limpar/preparar
       // 1. Verificar se precisamos carregar os DADOS do projeto
       // Se currentProject é nulo ou tem ID diferente, precisamos buscar os dados
       if (!currentStore.currentProject || currentStore.currentProject.id !== projectId) {
         filesLog.info('🧹 Preparando ambiente e buscando projeto', { newId: projectId });
-        
+
         try {
           const projectData = await getProject(projectId);
           if (projectData) {
             useIDEStore.getState().setCurrentProject(projectData);
             storeLog.success('✅ Dados do projeto carregados', { name: projectData.name });
           } else {
-             storeLog.error('❌ Projeto não encontrado no banco', { projectId });
+            storeLog.error('❌ Projeto não encontrado no banco', { projectId });
           }
         } catch (err) {
-           storeLog.error('❌ Erro ao buscar detalhes do projeto', err);
+          storeLog.error('❌ Erro ao buscar detalhes do projeto', err);
         }
       }
 
@@ -106,22 +109,22 @@ export function IDELayout({ projectId }: IDELayoutProps) {
       try {
         filesLog.info('📥 Buscando arquivos do projeto...', { projectId });
         const files = await getProjectFiles(projectId);
-        
+
         if (files) {
           // CORREÇÃO AUTOMÁTICA DE EXTENSÕES (Auto-fix para arquivos corrompidos)
           // Se o arquivo tem extensão .js/.jsx mas conteúdo TypeScript (interface/type/ClassValue), mudar para .ts/.tsx
           const sanitizedFiles = files.map(f => {
             let sanitizedFile = { ...f }; // Variável local para mutação segura
             const content = f.content_text || '';
-            
+
             // Heurística melhorada para detectar sintaxe TypeScript
-            const hasTsSyntax = 
-              content.includes('interface ') || 
+            const hasTsSyntax =
+              content.includes('interface ') ||
               (content.includes('type ') && content.includes('=')) ||
               content.includes(': ClassValue') ||  // Comum em lib/utils.ts
               content.includes(' as ') ||           // Type assertion
               /\w+\s*:\s*(string|number|boolean|any|void|unknown|never)/.test(content); // Type annotations
-            
+
             if (hasTsSyntax) {
               if (f.path.endsWith('.jsx')) {
                 filesLog.warn(`🔧 Corrigindo extensão .jsx -> .tsx: ${f.path}`);
@@ -137,7 +140,7 @@ export function IDELayout({ projectId }: IDELayoutProps) {
             // Vite não suporta <Link> de Next.js, convertemos para <a>
             if (!content.includes("'react-router-dom'") && !content.includes('"react-router-dom"')) {
               let fixedContent = content;
-              
+
               // 1. Convert ALL <Link ...> opening tags to <a ...>
               if (content.includes('<Link')) {
                 filesLog.warn(`🔧 Corrigindo <Link> para <a> em: ${f.path}`);
@@ -154,12 +157,12 @@ export function IDELayout({ projectId }: IDELayoutProps) {
                 // Fallback: any remaining <Link ...>
                 fixedContent = fixedContent.replace(/<Link\s+/g, '<a ');
               }
-              
+
               // 2. Convert ALL </Link> closing tags to </a>
               if (content.includes('</Link>')) {
                 fixedContent = fixedContent.replace(/<\/Link>/g, '</a>');
               }
-              
+
               if (fixedContent !== content) {
                 sanitizedFile = { ...sanitizedFile, content_text: fixedContent };
               }
@@ -216,9 +219,9 @@ export function IDELayout({ projectId }: IDELayoutProps) {
               <ArrowLeft className="h-4 w-4" />
             </Button>
           </Link>
-          
+
           <div className="h-5 w-px bg-zinc-700/50" />
-          
+
           <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-violet-500/20">
             <Blocks className="h-5 w-5 text-white" />
           </div>
@@ -284,8 +287,8 @@ export function IDELayout({ projectId }: IDELayoutProps) {
                 size="icon"
                 className={cn(
                   'w-10 h-10 rounded-xl transition-all duration-200',
-                  activePanel === item.id 
-                    ? 'text-violet-400 bg-violet-500/10' 
+                  activePanel === item.id
+                    ? 'text-violet-400 bg-violet-500/10'
                     : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800'
                 )}
                 onClick={() => {
@@ -308,9 +311,9 @@ export function IDELayout({ projectId }: IDELayoutProps) {
             variant="ghost"
             size="icon"
             className={cn(
-              'w-10 h-10 rounded-xl mb-1 transition-all', 
-              chatPanelOpen 
-                ? 'text-violet-400 bg-violet-500/10' 
+              'w-10 h-10 rounded-xl mb-1 transition-all',
+              chatPanelOpen
+                ? 'text-violet-400 bg-violet-500/10'
                 : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800'
             )}
             onClick={() => setChatPanelOpen(!chatPanelOpen)}
@@ -322,9 +325,9 @@ export function IDELayout({ projectId }: IDELayoutProps) {
             variant="ghost"
             size="icon"
             className={cn(
-              'w-10 h-10 rounded-xl mb-1 transition-all', 
-              terminalOpen 
-                ? 'text-violet-400 bg-violet-500/10' 
+              'w-10 h-10 rounded-xl mb-1 transition-all',
+              terminalOpen
+                ? 'text-violet-400 bg-violet-500/10'
                 : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800'
             )}
             onClick={() => setTerminalOpen(!terminalOpen)}
@@ -421,7 +424,14 @@ export function IDELayout({ projectId }: IDELayoutProps) {
               isEditorCollapsed ? "flex-1" : "w-[55%]"
             )}>
               {/* key={projectId} força reset completo do WebContainer ao trocar de projeto */}
-              <PreviewPanel key={`preview-${projectId}`} />
+              <PreviewPanel
+                key={`preview-${projectId}`}
+                isVisualEditMode={isVisualEditMode}
+                onComponentSelect={(filePath) => {
+                  console.log('[IDELayout] Componente selecionado:', filePath);
+                  setSelectedTargetFile(filePath);
+                }}
+              />
             </div>
           </div>
 
@@ -448,16 +458,16 @@ export function IDELayout({ projectId }: IDELayoutProps) {
             <GitBranch className="h-3 w-3" />
             <span>main</span>
           </Button>
-          
+
           <div className="flex items-center gap-1.5 px-2 hover:bg-zinc-900 rounded cursor-pointer transition-colors">
             <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
             <span>Conectado</span>
           </div>
-          
+
           <div className="h-3 w-px bg-zinc-800" />
           <span>0 problemas</span>
         </div>
-        
+
         <div className="flex items-center gap-4">
           <span className="cursor-pointer hover:text-zinc-300 transition-colors">Ln 1, Col 1</span>
           <span className="cursor-pointer hover:text-zinc-300 transition-colors">UTF-8</span>

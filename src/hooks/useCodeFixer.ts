@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import { useIDEStore } from '@/stores/ide-store';
+import { fixCode as fixCodeViaAI } from '@/lib/api/project-service';
 
 interface CodeError {
   line: number;
@@ -118,7 +119,7 @@ export function useCodeFixer(): UseCodeFixerResult {
 
     try {
       const currentContent = editorContent[activeFile.id] || activeFile.content_text || '';
-      
+
       // Analisar erros
       const foundErrors = analyzeCode(currentContent);
       setErrors(foundErrors);
@@ -154,25 +155,41 @@ export function useCodeFixer(): UseCodeFixerResult {
 
     try {
       const currentContent = editorContent[activeFile.id] || activeFile.content_text || '';
-      
-      // Primeiro, tentar correções automáticas
+
+      // 1. Tentar correções automáticas locais primeiro
       const fixedByAuto = autoFixCode(currentContent);
-      
-      // Verificar se ainda há erros após correção automática
-      const remainingErrors = analyzeCode(fixedByAuto);
-      
-      if (remainingErrors.length === 0) {
-        // Correção automática resolveu
-        setEditorContent(activeFile.id, fixedByAuto);
-        updateFile(activeFile.id, { content_text: fixedByAuto });
-        setIsFixing(false);
-        return fixedByAuto;
+
+      // 2. Enviar para IA (Edge Function)
+      // Precisamos identificar o arquivo corretamente
+      const filesToFix = [{
+        path: activeFile.path,
+        content: fixedByAuto,
+        language: activeFile.language || 'tsx'
+      }];
+
+      const { files: aiFixedFiles, error } = await fixCodeViaAI(filesToFix, {
+        intent: 'fix_syntax_and_imports',
+        strict_scope: true
+      });
+
+      if (error) {
+        throw new Error(error);
       }
 
-      // Se ainda há erros, aplicar correção automática pelo menos
+      if (aiFixedFiles && aiFixedFiles.length > 0) {
+        const bestFix = aiFixedFiles[0];
+
+        // Atualizar no editor e store
+        setEditorContent(activeFile.id, bestFix.content);
+        updateFile(activeFile.id, { content_text: bestFix.content });
+        setIsFixing(false);
+        return bestFix.content;
+      }
+
+      // Fallback: se IA não retornou nada, usar auto-fix local
       setEditorContent(activeFile.id, fixedByAuto);
       updateFile(activeFile.id, { content_text: fixedByAuto });
-      
+
       setIsFixing(false);
       return fixedByAuto;
     } catch (error) {
@@ -180,7 +197,7 @@ export function useCodeFixer(): UseCodeFixerResult {
       setIsFixing(false);
       return null;
     }
-  }, [activeFile, editorContent, analyzeCode, autoFixCode, setEditorContent, updateFile]);
+  }, [activeFile, editorContent, autoFixCode, setEditorContent, updateFile]);
 
   // Verificar se há erros no arquivo ativo
   const hasErrors = errors.length > 0;

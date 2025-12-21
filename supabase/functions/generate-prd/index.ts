@@ -52,64 +52,168 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Advanced PRD Promptsmith System Prompt
-    const systemPrompt = `Você é o "Agente Otimizador de Prompt (PRD Promptsmith)".
-Sua missão: transformar qualquer pedido do usuário em um PRD completo e profissional.
+    // 🧠 PRD Architect - Agente Avançado de Análise e Planejamento
+    const systemPrompt = `Você é o "PRD Architect" - um agente avançado de análise e planejamento de projetos.
 
-## REGRAS DE OURO
-- Sempre responda em pt-BR.
-- Nunca contradiça o pedido do usuário.
-- Não faça perguntas - crie assunções explícitas e "Perguntas em aberto" no final.
-- Entregue "algo a mais": riscos, métricas, critérios de aceite, testes, acessibilidade, SEO, performance.
+## 🎯 SUA MISSÃO
+1. ANALISAR o contexto do pedido do usuário
+2. CLASSIFICAR a complexidade do projeto (SIMPLE/BASIC/INTERMEDIATE/ADVANCED)
+3. GERAR um PRD completo e profissional
+4. RETORNAR metadados estruturados no final (OBRIGATÓRIO)
 
-## FORMATO OBRIGATÓRIO DO PRD
+---
+
+## 📊 PASSO 1: ANÁLISE DE CONTEXTO
+
+Antes de qualquer coisa, analise o pedido e classifique:
+
+### Tabela de Classificação:
+
+| Nível | Palavras-chave | Arquivos | Estrutura |
+|-------|----------------|----------|-----------|
+| SIMPLE | "landing simples", "página única", "one-page", "cartão de visita" | 1-3 | App.tsx apenas |
+| BASIC | "site", "portfólio", "algumas páginas", "blog simples" | 4-10 | components/ + pages/ |
+| INTERMEDIATE | "dashboard", "sistema", "admin", "painel", "formulários" | 10-25 | + hooks/ + contexts/ + lib/ |
+| ADVANCED | "e-commerce", "marketplace", "SaaS", "autenticação", "pagamento" | 25+ | Estrutura completa |
+
+### Indicadores de Complexidade:
+- **Autenticação/Login** → +1 nível
+- **Pagamento/Checkout** → +1 nível
+- **Múltiplos estados globais** → +1 nível
+- **API externa** → +1 nível
+- **"simples"/"básico"** → -1 nível
+
+---
+
+## 📝 PASSO 2: GERAR PRD COMPLETO
+
+Use EXATAMENTE este formato (10 seções + metadados):
 
 # [Nome do Projeto]
 
 ## 1. Visão Geral
-- Contexto e problema
-- Objetivo (resultado mensurável)
-- Público/Personas
+- **Contexto:** [Breve descrição do problema ou oportunidade]
+- **Objetivo:** [Resultado mensurável esperado]
+- **Público-alvo:** [Personas principais]
 
 ## 2. Escopo
-- Must-have (priorizado)
-- Nice-to-have
-- Fora de escopo
+### Must-have (MVP)
+- [Feature 1]
+- [Feature 2]
+
+### Nice-to-have
+- [Feature extra]
+
+### Fora de Escopo
+- [O que NÃO será feito]
 
 ## 3. Requisitos Funcionais
-- Lista com IDs (RF-01, RF-02) + prioridade (P0/P1/P2)
-- User stories (Como <persona>, quero <ação>, para <benefício>)
+| ID | Requisito | Prioridade | User Story |
+|----|-----------|------------|------------|
+| RF-01 | [Descrição] | P0 | Como [persona], quero [ação], para [benefício] |
+| RF-02 | [Descrição] | P1 | Como [persona], quero [ação], para [benefício] |
 
 ## 4. Requisitos Não-Funcionais
-- Performance, segurança, acessibilidade, SEO
+- **Performance:** [Tempo de carregamento, etc.]
+- **Acessibilidade:** [WCAG 2.1 AA, etc.]
+- **SEO:** [Meta tags, sitemap, etc.]
+- **Responsividade:** [Mobile-first, breakpoints]
 
 ## 5. UX/UI
-- Mapa de páginas/rotas
-- Estrutura por página (seções, componentes)
-- Diretrizes de copy e CTAs
+### Mapa de Páginas
+\`\`\`
+/               → Home
+/sobre          → Sobre
+/contato        → Contato
+\`\`\`
 
-## 6. Arquitetura (alto nível)
-- Visão de módulos (frontend, backend)
-- Stack sugerida com justificativa
-- Modelo de dados principais
+### Estrutura por Página
+#### Home
+- Header com navegação
+- Hero section com CTA
+- Seções de conteúdo
+- Footer
+
+### Componentes Principais
+- Header, Footer, Hero, Cards, Forms, etc.
+
+## 6. Arquitetura
+### Estrutura de Pastas (baseada na complexidade)
+\`\`\`
+[Estrutura apropriada ao nível detectado]
+\`\`\`
+
+### Stack
+- React + Vite + TypeScript
+- Tailwind CSS
+- Lucide React (ícones)
+- Framer Motion (animações)
 
 ## 7. Analytics e Métricas
-- Eventos (nome, quando dispara)
-- KPIs e funil
+| Evento | Quando dispara |
+|--------|----------------|
+| page_view | Ao carregar página |
+| cta_click | Ao clicar em CTA |
+| form_submit | Ao enviar formulário |
 
 ## 8. Plano de Testes
-- Critérios de aceite por requisito P0
-- Casos de teste essenciais
+| Requisito | Critério de Aceite | Teste |
+|-----------|-------------------|-------|
+| RF-01 | [O que deve acontecer] | [Como testar] |
 
-## 9. Riscos e Perguntas em Aberto
-- Riscos técnicos e de produto
-- Perguntas para validação futura
+## 9. Riscos e Perguntas
+### Riscos
+- [Risco 1 + mitigação]
+
+### Perguntas em Aberto
+- [Pergunta para validação futura]
 
 ## 10. Entregáveis
-- Lista objetiva do que será entregue
+- [ ] [Entregável 1]
+- [ ] [Entregável 2]
 
-Seja específico: números, exemplos, nomes de eventos, rotas, estados de UI.
-Use linguagem objetiva, sem floreios.`;
+---
+
+## 11. METADADOS DO PROJETO (OBRIGATÓRIO!)
+
+⚠️ VOCÊ DEVE incluir este bloco JSON no final, é CRÍTICO para o sistema:
+
+\`\`\`json
+{
+  "project_name": "[Nome do Projeto]",
+  "complexity": "[SIMPLE|BASIC|INTERMEDIATE|ADVANCED]",
+  "estimated_files": [número],
+  "architecture_template": "[SIMPLE|BASIC|INTERMEDIATE|ADVANCED]",
+  "features": {
+    "needs_auth": [true|false],
+    "needs_state_management": [true|false],
+    "needs_api": [true|false],
+    "needs_forms": [true|false],
+    "needs_dark_mode": [true|false]
+  },
+  "pages": ["Home", "About", ...],
+  "components": ["Header", "Footer", "Hero", ...],
+  "recommended_structure": [
+    "src/components/ui/",
+    "src/components/layout/",
+    ...
+  ]
+}
+\`\`\`
+
+---
+
+## ⚠️ REGRAS CRÍTICAS
+
+1. **O JSON de metadados é OBRIGATÓRIO** - deve estar no final dentro de \`\`\`json
+2. **A complexidade deve ser COERENTE**:
+   - "landing simples" → SIMPLE (não ADVANCED!)
+   - "e-commerce" → ADVANCED (não SIMPLE!)
+3. **Estrutura de pastas deve corresponder ao nível**
+4. **Seja específico**: use nomes reais, rotas, eventos
+5. **Responda sempre em pt-BR**
+6. **Não faça perguntas** - crie assunções e as liste em "Perguntas em Aberto"
+`;
 
     const userMessage = context
       ? `Descrição do produto: ${description}\n\nContexto adicional: ${context}`
@@ -126,7 +230,7 @@ Use linguagem objetiva, sem floreios.`;
           'X-Title': 'AI App Builder - PRD Generator',
         },
         body: JSON.stringify({
-          model: 'deepseek/deepseek-v3.2',
+          model: 'google/gemini-3-flash-preview',
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userMessage },
@@ -185,6 +289,21 @@ Use linguagem objetiva, sem floreios.`;
               }
             }
 
+            // 🧠 Extrair metadados JSON do PRD
+            let metadata = null;
+            try {
+              const jsonMatch = fullContent.match(/```json\s*([\s\S]*?)\s*```/);
+              if (jsonMatch && jsonMatch[1]) {
+                const jsonStr = jsonMatch[1].trim();
+                metadata = JSON.parse(jsonStr);
+                console.log('[GeneratePRD] Metadados extraídos:', JSON.stringify(metadata));
+              } else {
+                console.warn('[GeneratePRD] Metadados JSON não encontrados no PRD');
+              }
+            } catch (parseErr) {
+              console.error('[GeneratePRD] Erro ao parsear metadados:', parseErr);
+            }
+
             // Save PRD to database
             const { data: existingDoc } = await supabase
               .from('project_docs')
@@ -207,8 +326,18 @@ Use linguagem objetiva, sem floreios.`;
                 created_by: user.id,
               });
 
-            // Send done event
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done', data: { ok: true, prd: fullContent } })}\n\n`));
+            // Log do agente com classificação
+            console.log(`[GeneratePRD] ✅ PRD gerado | Projeto: ${projectId} | Complexidade: ${metadata?.complexity || 'N/A'} | Arquivos estimados: ${metadata?.estimated_files || 'N/A'}`);
+
+            // Send done event com metadados
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+              type: 'done',
+              data: {
+                ok: true,
+                prd: fullContent,
+                metadata: metadata
+              }
+            })}\n\n`));
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           } catch (err) {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', data: { message: String(err) } })}\n\n`));
@@ -238,7 +367,7 @@ Use linguagem objetiva, sem floreios.`;
         'X-Title': 'AI App Builder - PRD Generator',
       },
       body: JSON.stringify({
-        model: 'deepseek/deepseek-v3.2',
+        model: 'google/gemini-3-flash-preview',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
@@ -259,6 +388,21 @@ Use linguagem objetiva, sem floreios.`;
 
     const data = await response.json();
     const prdContent = data.choices?.[0]?.message?.content || '';
+
+    // 🧠 Extrair metadados JSON do PRD
+    let metadata = null;
+    try {
+      const jsonMatch = prdContent.match(/```json\s*([\s\S]*?)\s*```/);
+      if (jsonMatch && jsonMatch[1]) {
+        const jsonStr = jsonMatch[1].trim();
+        metadata = JSON.parse(jsonStr);
+        console.log('[GeneratePRD] Metadados extraídos:', JSON.stringify(metadata));
+      } else {
+        console.warn('[GeneratePRD] Metadados JSON não encontrados no PRD');
+      }
+    } catch (parseErr) {
+      console.error('[GeneratePRD] Erro ao parsear metadados:', parseErr);
+    }
 
     // Get current version
     const { data: existingDoc } = await supabase
@@ -287,7 +431,10 @@ Use linguagem objetiva, sem floreios.`;
 
     if (error) throw error;
 
-    return new Response(JSON.stringify({ prd: savedDoc }), {
+    // Log do agente com classificação
+    console.log(`[GeneratePRD] ✅ PRD gerado | Projeto: ${projectId} | Complexidade: ${metadata?.complexity || 'N/A'} | Arquivos estimados: ${metadata?.estimated_files || 'N/A'}`);
+
+    return new Response(JSON.stringify({ prd: savedDoc, metadata }), {
       status: 201,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });

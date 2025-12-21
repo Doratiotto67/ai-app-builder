@@ -33,6 +33,9 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  StopCircle,
+  MousePointerClick,
+  X,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -42,6 +45,8 @@ import { useWebContainer } from '@/lib/webcontainer';
 import { useCodeFixer } from '@/hooks/useCodeFixer';
 import { chatLog, extractLog } from '@/lib/debug/logger';
 import { validateAndCompleteFiles, fixAllFiles, fixJSXSyntax as fixSyntax } from '@/lib/code-validation';
+import { checkSyntax } from '@/lib/code-validation/syntax-checker';
+import { autoFix } from '@/lib/code-validation/auto-fix';
 import { fixCode as fixCodeViaAI } from '@/lib/api/project-service';
 // New components for Lovable-style UI
 import { ThreadMessage } from './thread-message';
@@ -78,25 +83,25 @@ interface ExtractedFile {
 function extractFilesFromContent(content: string): ExtractedFile[] {
   const files: ExtractedFile[] = [];
   const matches = content.matchAll(CODE_BLOCK_REGEX);
-  
+
   // Pegar contexto antes de cada bloco para detectar nomes de arquivo em markdown
   let lastIndex = 0;
-  
+
   for (const match of matches) {
     const language = match[1] || 'text';
     let code = match[2]?.trim() || '';
     const matchIndex = match.index || 0;
-    
+
     // Contexto antes do bloco (para detectar títulos markdown)
     const contextBefore = content.slice(Math.max(0, lastIndex), matchIndex).trim();
     lastIndex = matchIndex + match[0].length;
-    
+
     let filename: string | null = null;
-    
+
     // 1. Tentar detectar na primeira linha do código
     const firstLine = code.split('\n')[0];
     console.log(`[extractFilesFromContent] Primeira linha: "${firstLine.substring(0, 80)}..."`);
-    
+
     for (const pattern of FILENAME_PATTERNS) {
       const filenameMatch = firstLine.match(pattern);
       if (filenameMatch) {
@@ -106,7 +111,7 @@ function extractFilesFromContent(content: string): ExtractedFile[] {
         break;
       }
     }
-    
+
     // 2. Se não encontrou, procurar no contexto markdown antes do bloco
     if (!filename) {
       // Procura por: **arquivo.tsx**, `arquivo.tsx`, ou "arquivo.tsx"
@@ -116,7 +121,7 @@ function extractFilesFromContent(content: string): ExtractedFile[] {
         /"([^\s"]+\.[a-zA-Z]+)"\s*$/,
         /:\s*([^\s:]+\.[a-zA-Z]+)\s*$/,
       ];
-      
+
       for (const pattern of mdPatterns) {
         const mdMatch = contextBefore.match(pattern);
         if (mdMatch) {
@@ -125,7 +130,7 @@ function extractFilesFromContent(content: string): ExtractedFile[] {
         }
       }
     }
-    
+
     // 3. Inferir do tipo de linguagem se não encontrou (Legacy logic)
     if (!filename && code.length > 0) {
       if (['tsx', 'jsx', 'javascript', 'typescript'].includes(language)) {
@@ -142,7 +147,7 @@ function extractFilesFromContent(content: string): ExtractedFile[] {
         }
       }
     }
-    
+
     // 4. Fallback final se ainda não encontrou filename mas tem código substancial
     if (!filename && code.length > 5) {
       if (language === 'html' || code.includes('<!DOCTYPE html>') || code.includes('<html')) {
@@ -153,7 +158,7 @@ function extractFilesFromContent(content: string): ExtractedFile[] {
         // Tentar extrair nome da função para evitar colisões
         const funcMatch = code.match(/export\s+default\s+function\s+(\w+)/);
         const funcName = funcMatch?.[1];
-        
+
         if (funcName) {
           // Usar o nome da função para determinar o arquivo
           if (['App', 'Page', 'Home', 'Index', 'Landing'].includes(funcName)) {
@@ -170,24 +175,24 @@ function extractFilesFromContent(content: string): ExtractedFile[] {
         filename = `file-${Math.floor(Math.random() * 1000)}.${language === 'text' ? 'txt' : language}`;
       }
     }
-    
+
     if (filename && code) {
       // Remover barra inicial para consistência
       let cleanPath = filename.replace(/^\/+/, '');
-      
+
       // Validar e corrigir código básico
       const validatedCode = validateAndFixCode(code, language);
-      
+
       files.push({
         path: cleanPath,
         content: validatedCode,
         language,
       });
-      
+
       console.log(`[extractFilesFromContent] Arquivo detectado: ${cleanPath}`);
     }
   }
-  
+
   console.log(`[extractFilesFromContent] Total de arquivos extraídos: ${files.length}`);
   return files;
 }
@@ -203,22 +208,22 @@ function validateAndFixCode(code: string, language: string): string {
     }
     return result.code;
   }
-  
+
   let fixed = code;
-  
+
   // Para HTML, garantir espaços entre atributos
   if (language === 'html' || fixed.includes('<!DOCTYPE') || fixed.includes('<html')) {
     // Corrigir atributos concatenados sem espaço
     fixed = fixed.replace(/(\w+="[^"]*")(\w+=")/g, '$1 $2');
     fixed = fixed.replace(/(\w+='[^']*')(\w+=')/g, '$1 $2');
-    
+
     // Corrigir /> colado ao atributo
     fixed = fixed.replace(/(\w+="[^"]*")(\/\>)/g, '$1 $2');
     fixed = fixed.replace(/(\w+='[^']*')(\/\>)/g, '$1 $2');
-    
+
     // Garantir espaço antes de />
     fixed = fixed.replace(/([^\s])\/\>/g, '$1 />');
-    
+
     // Adicionar crossorigin a scripts externos CDN
     fixed = fixed.replace(/<script src="(https?:\/\/[^"]+)"\>/g, '<script src="$1" crossorigin>');
     fixed = fixed.replace(/<link([^>]*) href="(https?:\/\/[^"]+)"([^>]*)\>/g, (match, before, url, after) => {
@@ -226,7 +231,7 @@ function validateAndFixCode(code: string, language: string): string {
       return `<link${before} href="${url}"${after} crossorigin>`;
     });
   }
-  
+
   return fixed;
 }
 
@@ -253,11 +258,16 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
     setActiveFile,
     openFile,
     updateFile,
+    // Visual Edits
+    isVisualEditMode,
+    toggleVisualEditMode,
+    selectedTargetFile,
+    setSelectedTargetFile,
   } = useIDEStore();
 
   // Hook do WebContainer para escrever arquivos diretamente
   const { updateFile: writeToContainer, status: containerStatus } = useWebContainer({});
-  
+
   // Hook do agente de correção de código
   const { fixCode: fixActiveFile, isFixing: isEditorFixing, errors, analyzeCode, requestAIFix } = useCodeFixer();
   const [isFixing, setIsFixing] = useState(false);
@@ -273,6 +283,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null); // For stopping stream
 
   // Initialize chat thread
   useEffect(() => {
@@ -288,20 +299,20 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
 
       const existingMessages = await getChatMessages(thread.id);
       setMessages(existingMessages);
-      
+
       setInitialized(true);
     } catch (error) {
       console.error('Failed to initialize chat:', error);
-      
+
       let errorMessage = 'Erro ao conectar ao chat.';
       if (typeof error === 'object' && error !== null && 'message' in error) {
         errorMessage = (error as { message: string }).message;
       }
-      
+
       if (errorMessage?.includes('relation "public.chat_threads" does not exist')) {
         console.warn('Tabelas do chat não encontradas. Verifique se as migrações foram rodadas.');
       }
-      
+
       setInitialized(true);
     }
   };
@@ -347,7 +358,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       // Detectar se é TS ou JS baseado na extensão original ou conteúdo
       const isTs = filePath.endsWith('.tsx') || filePath.endsWith('.ts') || content.includes('interface ') || content.includes('type ');
       convertedPath = isTs ? 'src/App.tsx' : 'src/App.jsx';
-      
+
       // CRÍTICO: NÃO modificar exports - isso quebrava o código JSX antes!
       // Apenas remover 'use client'
       convertedContent = convertedContent
@@ -360,7 +371,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       const capitalizedName = pageName.charAt(0).toUpperCase() + pageName.slice(1);
       const ext = filePath.endsWith('.tsx') ? 'tsx' : 'jsx';
       convertedPath = `src/pages/${capitalizedName}.${ext}`;
-      
+
       // CRÍTICO: NÃO modificar exports - apenas remover 'use client'
       convertedContent = convertedContent
         .replace(/'use client';\s*\n?/g, '')
@@ -396,7 +407,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
 
     // 3. Substituir <Link href="..."> por <a href="..."> APENAS SE NÃO FOR REACT ROUTER
     const hasReactRouter = convertedContent.includes("'react-router-dom'") || convertedContent.includes('"react-router-dom"');
-    
+
     if (!hasReactRouter) {
       convertedContent = convertedContent.replace(/<Link\s+href={?(['"])([^'"]+)\1}?>/g, '<a href="$2">');
       convertedContent = convertedContent.replace(/<\/Link>/g, '</a>');
@@ -413,15 +424,42 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
   const handleCreateFiles = useCallback(async (filesToCreate?: ExtractedFile[]) => {
     const targets = filesToCreate && Array.isArray(filesToCreate) ? filesToCreate : extractedFiles;
     if (targets.length === 0) return;
-    
+
     setWritingFiles(true);
-    
+
     try {
-      // ETAPA 1: Corrigir sintaxe básica de todos os arquivos PRIMEIRO
+      // ETAPA 0: Auto-Fix e Validação Anti-Erro (Fase 3)
+      const autoFixedTargets = targets.map(f => ({
+        ...f,
+        content: autoFix(f.content, f.path)
+      }));
+
+      // Validar sintaxe e logar erros (apenas informativo por enquanto, não bloqueia)
+      let syntaxErrorsFound = 0;
+      autoFixedTargets.forEach(f => {
+        const { valid, errors } = checkSyntax(f.content, f.path);
+        if (!valid) {
+          syntaxErrorsFound++;
+          console.groupCollapsed(`%c[SyntaxCheck] ❌ Falha em ${f.path}`, 'color: #ef4444; font-weight: bold');
+          if (Array.isArray(errors)) {
+            errors.forEach(err => console.log(`%c• ${err}`, 'color: #f87171'));
+          } else {
+            console.error(errors);
+          }
+          console.groupEnd();
+          chatLog.error(`Erro de sintaxe em ${f.path}`, { errors });
+        }
+      });
+
+      if (syntaxErrorsFound > 0) {
+        console.log(`[ChatPanel] ⚠️ Encontrados erros de sintaxe em ${syntaxErrorsFound} arquivos. A validação posterior tentará corrigir.`);
+      }
+
+      // ETAPA 1: Corrigir sintaxe básica de todos os arquivos PRIMEIRO (Legado + Novo)
       const { files: syntaxFixedFiles, totalFixes, fixesByFile } = fixAllFiles(
-        targets.map(f => ({ path: f.path, content: f.content, language: f.language }))
+        autoFixedTargets.map(f => ({ path: f.path, content: f.content, language: f.language }))
       );
-      
+
       if (totalFixes > 0) {
         console.log(`[ChatPanel] 🔧 ${totalFixes} correções de sintaxe aplicadas`);
         chatLog.info(`Correções de sintaxe aplicadas`, { fixesByFile });
@@ -429,9 +467,11 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
 
       // ETAPA 2: Validar imports e gerar stubs para componentes faltantes
       const { files: validatedFiles, stubsGenerated, validation } = validateAndCompleteFiles(syntaxFixedFiles);
-      
+
       if (stubsGenerated > 0) {
-        console.log(`[ChatPanel] ⚠️ ${stubsGenerated} componentes stub gerados para imports faltantes`);
+        console.groupCollapsed(`%c[ChatPanel] ⚠️ ${stubsGenerated} componentes stub gerados`, 'color: #fbbf24; font-weight: bold');
+        console.table(validation.missingImports.map(m => ({ Module: m.importPath, Import: m.importedName })));
+        console.groupEnd();
         chatLog.warn(`Gerados ${stubsGenerated} componentes placeholder`, {
           missing: validation.missingImports.map(m => m.importedName)
         });
@@ -440,22 +480,28 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       // ETAPA 3: AI Fix Agent (Fix-Code)
       console.log(`[ChatPanel] 🤖 Iniciando agente de correção (Fix-Code)...`);
       let finalFiles = validatedFiles;
-      
+
       try {
         // Notificar UI se possível (opcional, já que estamos dentro do handler)
         // Se tivéssemos acesso ao setThinkingSteps aqui seria ideal, mas vamos confiar no log por enquanto
-        
+
         const { files: aiFixedFiles, error: aiError } = await fixCodeViaAI(validatedFiles.map(f => ({
           path: f.path,
           content: f.content,
           language: f.language
         })));
-        
+
         if (aiError) {
           console.error('[ChatPanel] Erro no agente fix-code:', aiError);
           // Fallback para arquivos validados apenas
         } else if (aiFixedFiles) {
-          console.log(`[ChatPanel] ✅ Agente retornou ${aiFixedFiles.length} arquivos processados`);
+          console.groupCollapsed(`%c[ChatPanel] ✅ Agente retornou ${aiFixedFiles.length} arquivos processados`, 'color: #4ade80; font-weight: bold');
+          console.table(aiFixedFiles.map(f => ({
+            Path: f.path,
+            Language: f.language,
+            Modified: f.content !== f.path // Simplificação (na prática precisaria comparar)
+          })));
+          console.groupEnd();
           finalFiles = aiFixedFiles.map(f => ({
             path: f.path,
             content: f.content,
@@ -468,18 +514,18 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       }
 
       console.log(`[ChatPanel] ⚡ Processando ${finalFiles.length} arquivos para salvamento...`);
-      
+
       // Convert all files first (sync)
       const convertedFiles = finalFiles.map(file => {
         const { path: convertedPath, content: convertedContent } = convertToVitePath(file.path, file.content);
         console.log(`[ChatPanel] Convertendo: ${file.path} → ${convertedPath}`);
-        return { 
-          path: convertedPath, 
-          content: convertedContent, 
-          language: file.language 
+        return {
+          path: convertedPath,
+          content: convertedContent,
+          language: file.language
         };
       });
-      
+
       // 1. Add all files to store (sync, fast)
       for (const file of convertedFiles) {
         addFile({
@@ -498,7 +544,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
           updated_at: new Date().toISOString(),
         });
       }
-      
+
       // 2. Save to Supabase in BATCH (single session, parallel requests)
       if (projectId && user) {
         saveFilesBatch(projectId, convertedFiles)
@@ -510,18 +556,20 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
           })
           .catch(err => console.error('[Supabase] Batch save failed:', err));
       }
-      
-      // 3. Write to WebContainer in PARALLEL (non-blocking)
+
+      // 3. Write to WebContainer in PARALLEL (wait for all writes to complete)
       if (containerStatus === 'ready') {
-        Promise.all(
-          convertedFiles.map(file => 
+        console.log(`[ChatPanel] 📝 Escrevendo ${convertedFiles.length} arquivos no WebContainer...`);
+        await Promise.all(
+          convertedFiles.map(file =>
             writeToContainer(file.path, file.content)
               .then(() => console.log(`[WebContainer] ✓ ${file.path}`))
               .catch(err => console.error(`[WebContainer] ✗ ${file.path}:`, err))
           )
         );
+        console.log(`[ChatPanel] ✅ Todos os arquivos escritos no WebContainer`);
       }
-      
+
       const createdFiles = convertedFiles.map(f => f.path);
 
       setFilesCreated(true);
@@ -545,7 +593,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
-          
+
           // Resize if too large (max 1200px)
           const MAX_SIZE = 1200;
           if (width > MAX_SIZE || height > MAX_SIZE) {
@@ -557,12 +605,12 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
               height = MAX_SIZE;
             }
           }
-          
+
           canvas.width = width;
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           if (!ctx) return reject('No context');
-          
+
           ctx.drawImage(img, 0, 0, width, height);
           resolve(canvas.toDataURL('image/webp', 0.8));
         };
@@ -593,12 +641,12 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
         } catch (err) {
           console.error('Image processing error:', err);
         }
-        
+
       }
     }
-    
+
     setAttachedImages(prev => [...prev, ...newImages]);
-    
+
     // Reset input
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [attachedImages.length, convertImageToWebP]);
@@ -609,14 +657,14 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
 
   const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
     const items = e.clipboardData.items;
-    
+
     // Check if we have any images
     const imageItems = Array.from(items).filter(item => item.type.startsWith('image/'));
-    
+
     if (imageItems.length > 0) {
       // Don't prevent default immediately if not purely image pasting, 
       // but usually we want to prevent binary data paste
-      
+
       if (attachedImages.length + imageItems.length > 5) {
         alert('Máximo de 5 imagens.');
         return;
@@ -634,13 +682,42 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
           }
         }
       }
-      
+
       if (newImages.length > 0) {
         e.preventDefault(); // Remove o arquivo da colagem para não virar texto
         setAttachedImages(prev => [...prev, ...newImages]);
       }
     }
   }, [attachedImages.length, convertImageToWebP]);
+
+  // Function to stop the streaming response
+  const handleStopStream = useCallback(() => {
+    if (abortControllerRef.current) {
+      console.log('[ChatPanel] Stopping stream...');
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+
+      // Add partial response as message if there's content
+      if (streamingContent.trim()) {
+        const partialMessage: ChatMessage = {
+          id: crypto.randomUUID(),
+          project_id: projectId,
+          thread_id: currentThread?.id || '',
+          role: 'assistant',
+          content: streamingContent + '\n\n*[Resposta interrompida pelo usuário]*',
+          content_json: null,
+          attachments: null,
+          created_by: null,
+          created_at: new Date().toISOString(),
+        };
+        addMessage(partialMessage);
+      }
+
+      setIsStreaming(false);
+      setStreamingContent('');
+      setThinkingSteps([]);
+    }
+  }, [streamingContent, projectId, currentThread?.id, addMessage, setIsStreaming, setStreamingContent]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -669,66 +746,93 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       setExtractedFiles([]);
       setFilesCreated(false);
 
+      // Create new AbortController for this request
+      abortControllerRef.current = new AbortController();
+
       try {
         // Obter contexto do arquivo ativo para ajudar na correção
-        const activeFileContext = activeFile 
+        const activeFileContext = activeFile
           ? `\n\nESTADO ATUAL DO ARQUIVO ${activeFile.path}:\n\`\`\`tsx\n${editorContent[activeFile.id] || activeFile.content_text || ''}\n\`\`\``
           : '';
 
-        const finalPrompt = input.trim() + activeFileContext;
+        // Contexto do Visual Edits - arquivo selecionado para edição cirúrgica
+        let surgicalContext = '';
+        if (selectedTargetFile) {
+          const targetFile = files.find(f => f.path === selectedTargetFile);
+          if (targetFile) {
+            const targetContent = editorContent[targetFile.id] || targetFile.content_text || '';
+            surgicalContext = `\n\n## 🎯 MODO EDIÇÃO VISUAL - ARQUIVO ALVO
+Você DEVE editar APENAS este arquivo: **${selectedTargetFile}**
+
+### Conteúdo atual do arquivo:
+\`\`\`tsx
+// ${selectedTargetFile}
+${targetContent}
+\`\`\`
+
+**INSTRUÇÕES:**
+- Edite APENAS o arquivo acima
+- NÃO crie novos arquivos
+- NÃO modifique outros arquivos
+- Retorne o arquivo completo com as melhorias solicitadas`;
+          }
+        }
+
+        const finalPrompt = input.trim() + activeFileContext + surgicalContext;
 
         if (user && currentThread) {
           chatLog.info('🔐 Modo autenticado - usando fluxo completo');
           chatLog.time('full-response');
-          
+
           let finalPromptForCode = finalPrompt;
-          
+
           // STEP 1: Analyze images if present (GLM Vision)
           if (attachedImages.length > 0) {
             setThinkingSteps([{ id: 'analyze', label: '🔍 Analisando imagens...', status: 'running' }]);
-            
+
             try {
               // Analyze images in PARALLEL for speed
               const imageDescriptions: string[] = [];
               const currentInput = input.trim();
               const currentImages = [...attachedImages];
-              
+
               const results = await Promise.all(
-                currentImages.map(img => 
+                currentImages.map(img =>
                   analyzeImage(img, currentInput).catch(err => {
                     console.warn('[ChatPanel] Erro ao analisar imagem:', err);
                     return null;
                   })
                 )
               );
-              
+
               for (const result of results) {
                 if (result?.analysis) {
                   imageDescriptions.push(result.analysis);
                 }
               }
-              
+
               if (imageDescriptions.length > 0) {
                 finalPromptForCode = `${currentInput}\n\n## Análise das Imagens:\n${imageDescriptions.join('\n\n---\n\n')}`;
               }
-              
-              setThinkingSteps(prev => prev.map(s => 
+
+              setThinkingSteps(prev => prev.map(s =>
                 s.id === 'analyze' ? { ...s, status: 'done' } : s
               ));
             } catch (err) {
               console.warn('[ChatPanel] Erro na análise de imagens:', err);
-              setThinkingSteps(prev => prev.map(s => 
+              setThinkingSteps(prev => prev.map(s =>
                 s.id === 'analyze' ? { ...s, status: 'error' } : s
               ));
             }
           }
-          
+
           // STEP 2: Generate PRD (streaming)
           setThinkingSteps(prev => [...prev, { id: 'prd', label: '📝 Gerando PRD...', status: 'running' }]);
-          
+
           let prdContent = '';
+          let prdMetadata: any = null; // Capturar metadados do PRD
           try {
-            await generatePRD(
+            const prdResult = await generatePRD(
               projectId,
               finalPromptForCode,
               undefined, // context
@@ -739,32 +843,38 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
               () => {
                 // Status callback
               },
-              (prd) => {
+              (prd, metadata) => {
                 prdContent = prd;
-                setThinkingSteps(prev => prev.map(s => 
+                prdMetadata = metadata; // Salvar metadados
+                console.log('[ChatPanel] PRD Metadata:', metadata);
+                setThinkingSteps(prev => prev.map(s =>
                   s.id === 'prd' ? { ...s, status: 'done' } : s
                 ));
               },
               (error) => {
                 console.error('[ChatPanel] PRD error:', error);
-                setThinkingSteps(prev => prev.map(s => 
+                setThinkingSteps(prev => prev.map(s =>
                   s.id === 'prd' ? { ...s, status: 'error' } : s
                 ));
               }
             );
+            // Também capturar do retorno direto (fallback)
+            if (prdResult?.metadata && !prdMetadata) {
+              prdMetadata = prdResult.metadata;
+            }
           } catch (err) {
             console.warn('[ChatPanel] PRD generation failed, using original prompt:', err);
             prdContent = finalPromptForCode; // Fallback to original prompt
           }
-          
+
           // STEP 3: Generate Code (Gemini, streaming)
           setThinkingSteps(prev => [...prev, { id: 'code', label: '💻 Gerando código...', status: 'running' }]);
-          
+
           let fullContent = '';
-          const codePrompt = prdContent 
+          const codePrompt = prdContent
             ? `## PRD (Documento de Requisitos):\n${prdContent}\n\n## INSTRUÇÃO:\nImplemente o PRD acima gerando o código completo.`
             : finalPromptForCode;
-          
+
           await sendChatMessage(
             projectId,
             currentThread.id,
@@ -772,13 +882,13 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
             (delta: string) => {
               fullContent += delta;
               appendStreamingContent(delta);
-              setThinkingSteps(prev => prev.map(s => 
+              setThinkingSteps(prev => prev.map(s =>
                 s.id === 'code' ? { ...s, status: 'done' } : s
               ));
             },
             (phase?: string) => {
               if (phase === 'thinking') {
-                setThinkingSteps(prev => prev.map(s => 
+                setThinkingSteps(prev => prev.map(s =>
                   s.id === 'code' ? { ...s, label: '💻 Pensando...', status: 'running' } : s
                 ));
               }
@@ -786,7 +896,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
             () => {
               // STEP 4: Add message and auto-save files
               setThinkingSteps(prev => [...prev, { id: 'saving', label: '✅ Salvando arquivos...', status: 'running' }]);
-              
+
               const assistantMessage: ChatMessage = {
                 id: crypto.randomUUID(),
                 project_id: projectId,
@@ -800,36 +910,84 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
               };
               addMessage(assistantMessage);
               setStreamingContent('');
-              
+
               // Extract files WITHOUT auto-save (user must approve)
-              const extracted = extractFilesFromContent(fullContent);
+              let extracted = extractFilesFromContent(fullContent);
+
+              // 🛡️ GATE DE ENFORCEMENT: Filtrar arquivos fora do escopo
+              if (selectedTargetFile && extracted.length > 0) {
+                const allowedPaths = new Set([selectedTargetFile]);
+                const beforeCount = extracted.length;
+
+                const filtered = extracted.filter(f => {
+                  const isAllowed = allowedPaths.has(f.path);
+                  if (!isAllowed) {
+                    console.warn(`[SCOPE_VIOLATION] ⛔ Arquivo REJEITADO: ${f.path} (não está em allowed_paths)`);
+                  }
+                  return isAllowed;
+                });
+
+                const rejected = beforeCount - filtered.length;
+                if (rejected > 0) {
+                  console.warn(`[ENFORCEMENT] 🛡️ Gate ativado: ${rejected} arquivo(s) BLOQUEADO(S) por violação de escopo`);
+                  // Adicionar mensagem de aviso ao chat
+                  const warningMessage: ChatMessage = {
+                    id: crypto.randomUUID(),
+                    project_id: projectId,
+                    thread_id: currentThread.id,
+                    role: 'assistant',
+                    content: `⚠️ **Aviso de Escopo:** A IA tentou modificar ${rejected} arquivo(s) fora do escopo permitido. Apenas o arquivo \`${selectedTargetFile}\` foi aceito.`,
+                    content_json: null,
+                    attachments: null,
+                    created_by: null,
+                    created_at: new Date().toISOString(),
+                  };
+                  addMessage(warningMessage);
+                }
+
+                extracted = filtered;
+              }
+
               if (extracted.length > 0) {
                 console.log(`[ChatPanel] ${extracted.length} arquivos detectados (aguardando aprovação)`);
                 setExtractedFiles(extracted);
                 setFilesCreated(false);
                 // NÃO chamar handleCreateFiles - usuário deve aprovar
               }
-              
-              setThinkingSteps(prev => prev.map(s => 
+
+              setThinkingSteps(prev => prev.map(s =>
                 s.id === 'saving' ? { ...s, status: 'done' } : s
               ));
-              
+
               // CRÍTICO: Limpar estado de streaming para UI não ficar travada
               setIsStreaming(false);
-              
+              abortControllerRef.current = null; // Clear abort controller
+
+              // Limpar target após uso
+              if (selectedTargetFile) {
+                setSelectedTargetFile(null);
+              }
+
               // Limpar steps após um pequeno delay para o usuário ver a conclusão
               setTimeout(() => {
                 setThinkingSteps([]);
               }, 1500);
-              
+
               chatLog.timeEnd('full-response');
             },
             (error: Error) => {
               console.error('Chat error:', error);
               setIsStreaming(false);
               setStreamingContent('');
+              abortControllerRef.current = null; // Clear abort controller
             },
-            attachedImages.length > 0 ? attachedImages : undefined
+            attachedImages.length > 0 ? attachedImages : undefined,
+            abortControllerRef.current?.signal, // Pass abort signal
+            // Surgical mode targets
+            selectedTargetFile ? { paths: [selectedTargetFile] } : undefined,
+            selectedTargetFile ? 'surgical' : undefined,
+            // PRD Metadata para arquitetura dinâmica
+            prdMetadata || undefined
           );
           // Clear attached images after sending
           setAttachedImages([]);
@@ -869,7 +1027,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                     fullContent += parsed.data.text;
                     appendStreamingContent(parsed.data.text);
                     // Se recebemos texto, o pensamento acabou
-                    setThinkingSteps(prev => 
+                    setThinkingSteps(prev =>
                       prev.map(s => s.id === 'thinking' ? { ...s, status: 'done' } : s)
                     );
                   } else if (parsed.type === 'status_update') {
@@ -982,7 +1140,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       </div>
 
       {/* Messages - SCROLL CORRIGIDO */}
-      <div 
+      <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto p-4 space-y-4"
@@ -990,7 +1148,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       >
         {messages.length === 0 && !isStreaming ? (
           <div className="h-full flex flex-col items-center justify-center text-center px-6">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ duration: 0.5, ease: 'easeOut' }}
@@ -1001,7 +1159,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                 <Bot className="h-10 w-10 text-white drop-shadow-md" />
               </div>
             </motion.div>
-            
+
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1015,7 +1173,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
               </p>
             </motion.div>
 
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.3, duration: 0.5 }}
@@ -1039,13 +1197,13 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
               // Extract files for this message if any
               const msgFiles = extractFilesFromContent(message.content || '').map(f => ({
                 path: f.path,
-                action: 'created' as const, 
+                action: 'created' as const,
                 language: f.language
               }));
 
               return (
-                <ThreadMessage 
-                  key={message.id} 
+                <ThreadMessage
+                  key={message.id}
                   role={message.role as 'user' | 'assistant'}
                   content={message.content || ''}
                   images={message.role === 'user' ? (message.attachments as any) || undefined : undefined} // Adjust based on your types
@@ -1060,7 +1218,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                 />
               );
             })}
-            
+
             {isStreaming && (
               <ThreadMessage
                 role="assistant"
@@ -1124,13 +1282,13 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
       <div className="px-2 pb-4 shrink-0 relative bg-zinc-900">
         {/* Glow behind input area */}
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[90%] h-px bg-gradient-to-r from-transparent via-violet-500/20 to-transparent" />
-        
+
         {/* Attached images preview */}
         {attachedImages.length > 0 && (
           <div className="flex flex-wrap gap-2.5 mb-2 px-2">
             {attachedImages.map((img, idx) => (
-              <motion.div 
-                key={idx} 
+              <motion.div
+                key={idx}
                 initial={{ opacity: 0, scale: 0.8 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="relative group"
@@ -1156,7 +1314,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
           <div className="relative group/input">
             {/* Input Glass Effect Container */}
             <div className="absolute -inset-0.5 bg-gradient-to-r from-violet-500/20 to-fuchsia-500/20 rounded-2xl blur opacity-0 group-focus-within/input:opacity-100 transition duration-500" />
-            
+
             <div className="relative bg-zinc-900/60 backdrop-blur-xl border border-white/5 rounded-2xl overflow-hidden shadow-2xl transition-all focus-within:border-white/10 focus-within:bg-zinc-900/80">
               {/* Hidden file input for image upload */}
               <input
@@ -1167,7 +1325,26 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                 className="hidden"
                 onChange={handleImageUpload}
               />
-              
+
+              {/* Selected Target Badge */}
+              {selectedTargetFile && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-cyan-900/30 border-b border-cyan-700/30">
+                  <MousePointerClick className="h-3.5 w-3.5 text-cyan-400" />
+                  <span className="text-xs text-cyan-400">Editando:</span>
+                  <span className="text-xs text-white font-mono bg-cyan-800/50 px-2 py-0.5 rounded">
+                    {selectedTargetFile.split('/').pop()}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTargetFile(null)}
+                    className="text-cyan-400 hover:text-white p-0.5 ml-auto"
+                    title="Limpar seleção"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
+
               <Textarea
                 ref={textareaRef}
                 value={input}
@@ -1224,6 +1401,25 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                     <ImageIcon className="h-4.5 w-4.5" />
                   </Button>
 
+                  {/* Visual Edits Toggle Button */}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={toggleVisualEditMode}
+                    className={cn(
+                      'h-8 px-2 gap-1.5 rounded-lg text-xs font-medium transition-colors',
+                      isVisualEditMode
+                        ? 'bg-cyan-600 text-white hover:bg-cyan-500'
+                        : 'text-zinc-400 hover:text-white hover:bg-zinc-700/50'
+                    )}
+                    disabled={isStreaming}
+                    title={isVisualEditMode ? "Desativar modo visual" : "Ativar modo visual - Clique no preview para selecionar"}
+                  >
+                    <MousePointerClick className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Visual</span>
+                  </Button>
+
                   <Button
                     type="button"
                     variant="ghost"
@@ -1243,20 +1439,20 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                           content: f.content_text || '',
                           language: f.language || 'text'
                         }));
-                        
+
                         console.log(`[FixCode] Enviando ${filesToFix.length} arquivos para correção...`);
                         const result = await fixCodeViaAI(filesToFix);
-                        
+
                         if (result.error) {
                           throw new Error(result.error);
                         }
-                        
+
                         const fixedFiles = result.files.filter((f: any) => f.wasFixed);
                         const fixedCount = fixedFiles.length;
-                        
+
                         if (fixedCount > 0) {
                           console.log(`[FixCode] ${fixedCount} arquivos corrigidos, aplicando...`);
-                          
+
                           // Aplicar correções no store e WebContainer
                           for (const fixedFile of fixedFiles) {
                             // 1. Atualizar no store
@@ -1264,7 +1460,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                             if (existingFile) {
                               updateFile(existingFile.id, { content_text: fixedFile.content });
                             }
-                            
+
                             // 2. Escrever no WebContainer (se estiver pronto)
                             if (containerStatus === 'ready') {
                               try {
@@ -1275,12 +1471,12 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                               }
                             }
                           }
-                          
+
                           // 3. Mostrar mensagem de sucesso com detalhes
-                          const fixDetails = fixedFiles.map((f: any) => 
+                          const fixDetails = fixedFiles.map((f: any) =>
                             `• **${f.path}**: ${f.fixes.join(', ')}`
                           ).join('\n');
-                          
+
                           addMessage({
                             id: crypto.randomUUID(),
                             project_id: projectId,
@@ -1292,10 +1488,10 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                             attachments: null,
                             created_by: null
                           } as ChatMessage);
-                          
+
                           // 4. Atualizar preview
                           refreshPreview();
-                          
+
                         } else {
                           addMessage({
                             id: crypto.randomUUID(),
@@ -1309,7 +1505,7 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                             created_by: null
                           } as ChatMessage);
                         }
-                        
+
                       } catch (error) {
                         console.error('[FixCode] Erro:', error);
                         addMessage({
@@ -1332,19 +1528,27 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
                   </Button>
                 </div>
 
-                {/* Right Action: Send */}
-                <Button
-                  type="submit"
-                  size="icon"
-                  className="rounded-xl h-8 w-8 bg-zinc-100 hover:bg-white text-zinc-900 shadow-md transition-all active:scale-95 disabled:opacity-50"
-                  disabled={!input.trim() || isStreaming}
-                >
-                  {isStreaming ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
+                {/* Right Action: Send or Stop */}
+                {isStreaming ? (
+                  <Button
+                    type="button"
+                    size="icon"
+                    className="rounded-xl h-8 w-8 bg-red-500 hover:bg-red-600 text-white shadow-md transition-all active:scale-95"
+                    onClick={handleStopStream}
+                    title="Parar geração"
+                  >
+                    <StopCircle className="h-4 w-4" />
+                  </Button>
+                ) : (
+                  <Button
+                    type="submit"
+                    size="icon"
+                    className="rounded-xl h-8 w-8 bg-zinc-100 hover:bg-white text-zinc-900 shadow-md transition-all active:scale-95 disabled:opacity-50"
+                    disabled={!input.trim()}
+                  >
                     <Send className="h-4 w-4" />
-                  )}
-                </Button>
+                  </Button>
+                )}
               </div>
             </div>
           </div>
