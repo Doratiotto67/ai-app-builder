@@ -184,6 +184,11 @@ Use EXATAMENTE este formato (10 seções + metadados):
   "complexity": "[SIMPLE|BASIC|INTERMEDIATE|ADVANCED]",
   "estimated_files": [número],
   "architecture_template": "[SIMPLE|BASIC|INTERMEDIATE|ADVANCED]",
+  "expected_structure": {
+    "required_files": ["src/App.tsx", "src/index.css", "package.json", "index.html"],
+    "component_count": [número],
+    "page_count": [número]
+  },
   "features": {
     "needs_auth": [true|false],
     "needs_state_management": [true|false],

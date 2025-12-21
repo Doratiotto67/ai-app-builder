@@ -1,9 +1,10 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { logAgentEvent } from '../_shared/agent-logger.ts';
-import { autoFix } from '../_shared/auto-fix.ts';
+import { logAgentEvent, errorToLogEntry } from '../_shared/agent-logger.ts';
 import { checkSyntax, checkFilesIntegrity } from '../_shared/syntax-checker.ts';
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
+// v2.1.0 - Removido fast-path para garantir qualidade do JSX
+
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -233,6 +234,26 @@ F) **NOVO:** Funcionalidade de elementos interativos
 OBJETIVO FINAL: ZERO LINHAS VERMELHAS + FUNCIONALIDADE COMPLETA.
 `;
 
+/**
+ * Sanitiza resposta JSON removendo caracteres de controle e escapando newlines dentro de strings
+ */
+function sanitizeJsonResponse(str: string): string {
+  // Remove caracteres de controle (exceto newline, tab, carriage return normais)
+  str = str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+  let inString = false;
+  let escaped = false;
+  let result = '';
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    if (escaped) { result += char; escaped = false; continue; }
+    if (char === '\\') { escaped = true; result += char; continue; }
+    if (char === '"') { inString = !inString; result += char; continue; }
+    if (inString && (char === '\n' || char === '\r')) { result += char === '\n' ? '\\n' : '\\r'; continue; }
+    if (inString && char === '\t') { result += '\\t'; continue; }
+    result += char;
+  }
+  return result;
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -273,15 +294,13 @@ Deno.serve(async (req) => {
 
     const filesToProcessFiltered = filesToProcessRaw.slice(0, 15);
 
-    const autoFixedFiles = filesToProcessFiltered.map(f => ({
-      ...f,
-      content: autoFix(f.content, f.path)
-    }));
+    // Processar arquivos diretamente (sem auto-fix local - a IA faz a correção)
+    const processedFiles = [...filesToProcessFiltered];
 
     let syntaxErrorsFound = 0;
     const validationResults: { path: string; errors: string[] }[] = [];
 
-    autoFixedFiles.forEach(f => {
+    processedFiles.forEach(f => {
       const { valid, errors } = checkSyntax(f.content, f.path);
       if (!valid) {
         syntaxErrorsFound++;
@@ -291,7 +310,7 @@ Deno.serve(async (req) => {
     });
 
     // Verificar integridade e GERAR arquivos faltantes automaticamente
-    const integrityErrors = checkFilesIntegrity(autoFixedFiles.map(f => ({ path: f.path, content: f.content })));
+    const integrityErrors = checkFilesIntegrity(processedFiles.map(f => ({ path: f.path, content: f.content })));
 
     // Extrair os arquivos faltantes
     const missingFiles: string[] = [];
@@ -300,7 +319,7 @@ Deno.serve(async (req) => {
         const match = err.match(/Arquivo '([^']+)' importado mas não encontrado/);
         if (match) {
           const missingPath = match[1];
-          if (!missingFiles.includes(missingPath) && !autoFixedFiles.find(f => f.path === missingPath)) {
+          if (!missingFiles.includes(missingPath) && !processedFiles.find(f => f.path === missingPath)) {
             missingFiles.push(missingPath);
           }
         }
@@ -313,7 +332,7 @@ Deno.serve(async (req) => {
 
       for (const missingPath of missingFiles) {
         const stub = generateMissingFileStub(missingPath);
-        autoFixedFiles.push({
+        processedFiles.push({
           path: missingPath,
           content: stub,
           language: missingPath.endsWith('.tsx') || missingPath.endsWith('.jsx') ? 'tsx' : 'typescript'
@@ -340,55 +359,39 @@ Deno.serve(async (req) => {
     }
 
     console.log(`[fix-code] StrictScope: ${strict_scope} | AllowedPaths: ${allowed_paths.join(', ') || 'all'} | Intent: ${intent}`);
-    console.log(`[fix-code] Auto-fix aplicado. Erros de sintaxe: ${syntaxErrorsFound}, Arquivos gerados: ${missingFiles.length}`);
+    console.log(`[fix-code] Auto-fix aplicado. Erros de sintaxe detectados: ${syntaxErrorsFound}, Arquivos gerados: ${missingFiles.length}`);
 
-    // SE não houver erros de sintaxe reais, retornar arquivos com stubs gerados
-    if (syntaxErrorsFound === 0) {
-      console.log(`[fix-code] ✅ Nenhum erro de sintaxe. Retornando ${autoFixedFiles.length} arquivos (incluindo ${missingFiles.length} stubs).`);
-
-      // Criar lista de arquivos resultantes, incluindo stubs gerados
-      const quickFixedFiles: FixedFile[] = [];
-
-      // Arquivos originais (possivelmente corrigidos por auto-fix)
-      for (let i = 0; i < filesToProcessFiltered.length; i++) {
-        const f = autoFixedFiles[i];
-        const original = filesToProcessFiltered[i];
-        quickFixedFiles.push({
-          path: f.path,
-          content: f.content,
-          language: f.language,
-          wasFixed: f.content !== original.content,
-          fixes: f.content !== original.content ? ['auto-fix aplicado'] : []
-        });
+    // IMPORTANTE: SEMPRE chamar a IA para garantir código correto
+    // Erros sutis de JSX (como o reportado pelo usuário) podem passar pelo checkSyntax simples.
+    console.log(`[fix-code] 🤖 Chamando IA para validação profunda em ${processedFiles.length} arquivos...`);
+    
+    const postAutoFixValidation: { path: string; errors: string[] }[] = [];
+    processedFiles.forEach(f => {
+      const { valid, errors } = checkSyntax(f.content, f.path);
+      if (!valid) {
+        postAutoFixValidation.push({ path: f.path, errors });
+        console.log(`[fix-code] ⚠️ Erro de sintaxe detectado: ${f.path}: ${errors.join(', ')}`);
       }
+    });
 
-      // Adicionar stubs gerados (se houver)
-      for (let i = filesToProcessFiltered.length; i < autoFixedFiles.length; i++) {
-        const f = autoFixedFiles[i];
-        quickFixedFiles.push({
-          path: f.path,
-          content: f.content,
-          language: f.language,
-          wasFixed: true,
-          fixes: ['Arquivo stub gerado automaticamente']
-        });
-        console.log(`[fix-code] 📄 Incluindo stub gerado: ${f.path}`);
-      }
+    // Se houver erros de integridade ou sintaxe, ou se for solicitado, chamamos a IA.
+    // Na verdade, agora SEMPRE chamamos a IA para garantir a qualidade.
 
-      return new Response(JSON.stringify({
-        files: quickFixedFiles,
-        integrityErrors: []
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
 
-    const filesToProcess = autoFixedFiles;
+    // Se chegou aqui, AINDA há erros - DEVE chamar a IA
+    console.log(`[fix-code] ⚠️ Ainda há ${postAutoFixValidation.length} arquivo(s) com erro. Chamando IA para correção...`);
+
+    const filesToProcess = processedFiles;
     const filesContent = filesToProcess.map(f =>
       `--- ARQUIVO: ${f.path} ---\n\`\`\`${f.language}\n${f.content}\n\`\`\``
     ).join('\n\n');
 
     let userMessage = `Analise e corrija estes arquivos. Retorne o JSON com o código COMPLETO corrigido.\n\n${filesContent}`;
+
+    // Adicionar erros de sintaxe detectados para a IA saber exatamente o que corrigir
+    if (postAutoFixValidation.length > 0) {
+      userMessage += `\n\n🚨 ERROS DE SINTAXE DETECTADOS (PRIORIDADE MÁXIMA):\n${postAutoFixValidation.map(e => `- ${e.path}: ${e.errors.join(', ')}`).join('\n')}\nIMPORTANTE: Esses erros DEVEM ser corrigidos. Verifique declarações de função truncadas, aspas não fechadas, e className mal formados.`;
+    }
 
     if (integrityErrors.length > 0) {
       userMessage += `\n\nERROS DE INTEGRIDADE DETECTADOS (Imports faltando):\n${integrityErrors.map(e => `- ${e.path}: ${e.errors.join(', ')}`).join('\n')}\nIMPORTANTE: Tente corrigir os imports ou criar os arquivos se o conteúdo for óbvio.`;
@@ -423,7 +426,7 @@ Deno.serve(async (req) => {
       try {
         const errorJson = JSON.parse(errorText);
         cleanError = errorJson.error?.message || errorJson.message || errorText;
-      } catch (e) {
+      } catch (_e) {
         // keep as text
       }
 
@@ -461,99 +464,105 @@ Deno.serve(async (req) => {
             if (delta) {
               fullContent += delta;
             }
-          } catch (e) {
+          } catch (_e) {
             // Skip invalid JSON chunks
           }
         }
       }
     }
 
-    let aiResponse = fullContent.replace(/```json\n?|```/g, '').trim();
-
-    function sanitizeJsonResponse(str: string): string {
-      str = str.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
-      let inString = false;
-      let escaped = false;
-      let result = '';
-      for (let i = 0; i < str.length; i++) {
-        const char = str[i];
-        if (escaped) { result += char; escaped = false; continue; }
-        if (char === '\\') { escaped = true; result += char; continue; }
-        if (char === '"') { inString = !inString; result += char; continue; }
-        if (inString && (char === '\n' || char === '\r')) { result += char === '\n' ? '\\n' : '\\r'; continue; }
-        if (inString && char === '\t') { result += '\\t'; continue; }
-        result += char;
-      }
-      return result;
-    }
+    const aiResponse = fullContent.replace(/```json\n?|```/g, '').trim();
 
     const sanitizedResponse = sanitizeJsonResponse(aiResponse);
 
-    let parsedResult: { files: FixedFile[] };
-    try {
-      parsedResult = JSON.parse(sanitizedResponse) as { files: FixedFile[] };
-    } catch (e) {
+      console.log(`[fix-code] 📝 Resposta RAW da IA (${aiResponse.length} chars):`, aiResponse.substring(0, 500) + '...');
+
+      let parsedResult: { files: FixedFile[] };
       try {
-        const filesMatch = sanitizedResponse.match(/"files"\s*:\s*\[[\s\S]*\]/);
-        if (filesMatch) {
-          const fixedJson = `{${filesMatch[0]}}`;
-          parsedResult = JSON.parse(fixedJson) as { files: FixedFile[] };
-        } else {
-          throw new Error('Could not extract files array');
+        parsedResult = JSON.parse(sanitizedResponse) as { files: FixedFile[] };
+      } catch (e) {
+        console.warn('[fix-code] ⚠️ Falha ao fazer parse do JSON principal. Tentando extrair regex...', e);
+        try {
+          const filesMatch = sanitizedResponse.match(/"files"\s*:\s*\[[\s\S]*\]/);
+          if (filesMatch) {
+            const fixedJson = `{${filesMatch[0]}}`;
+            parsedResult = JSON.parse(fixedJson) as { files: FixedFile[] };
+          } else {
+            throw new Error('Could not extract files array');
+          }
+        } catch (e2) {
+          console.error('[fix-code] ❌ FALHA CRÍTICA no parse do JSON da IA:', e2);
+          parsedResult = { files: [] };
         }
-      } catch (e2) {
-        parsedResult = { files: [] };
       }
-    }
-
-    let aiFiles = parsedResult.files || [];
-    if (strict_scope && allowed_paths.length > 0) {
-      aiFiles = aiFiles.filter(f => allowed_paths.includes(f.path));
-    }
-
-    const fixedFiles: FixedFile[] = [];
-    for (const f of files) {
-      const fixed = aiFiles.find(rf => rf.path === f.path);
-      if (fixed && fixed.content && fixed.content.trim() !== f.content.trim()) {
-        fixedFiles.push({
-          path: f.path,
-          content: fixed.content,
-          language: f.language,
-          wasFixed: true,
-          fixes: fixed.fixes || ['Correção aplicada']
-        });
-      } else {
-        fixedFiles.push({
-          path: f.path,
-          content: f.content,
-          language: f.language,
-          wasFixed: false,
-          fixes: []
-        });
+  
+      let aiFiles = parsedResult.files || [];
+      if (strict_scope && allowed_paths.length > 0) {
+        aiFiles = aiFiles.filter(f => allowed_paths.includes(f.path));
       }
-    }
+  
+      const fixedFiles: FixedFile[] = [];
+      for (const f of files) {
+        const fixed = aiFiles.find(rf => rf.path === f.path);
+        if (fixed && fixed.content && fixed.content.trim() !== f.content.trim()) {
+          fixedFiles.push({
+            path: f.path,
+            content: fixed.content,
+            language: f.language,
+            wasFixed: true,
+            fixes: fixed.fixes || ['Correção aplicada']
+          });
+        } else {
+          fixedFiles.push({
+            path: f.path,
+            content: f.content,
+            language: f.language,
+            wasFixed: false,
+            fixes: []
+          });
+        }
+      }
+  
+      const executionTime = Date.now() - startTime;
+      console.log(`[fix-code] ✅ Processamento concluído em ${executionTime}ms`);
 
-    return new Response(JSON.stringify({
-      files: fixedFiles,
-      integrityErrors: integrityErrors.map(e => `${e.path}: ${e.errors.join(', ')}`)
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+      // Log de métrica para sucesso
+      try {
+        await logAgentEvent({
+          agent_type: 'fix-code',
+          status_code: 200,
+          execution_time_ms: executionTime,
+          files_count: filesCount,
+          request_summary: `IA processou ${filesToProcess.length} arquivos. ${fixedFiles.filter(f => f.wasFixed).length} corrigidos.`
+        });
+      } catch (logErr) {
+        console.warn('[fix-code] Erro ao logar métricas de sucesso:', logErr);
+      }
+
+      return new Response(JSON.stringify({
+        files: fixedFiles,
+        integrityErrors: integrityErrors.map(e => `${e.path}: ${e.errors.join(', ')}`),
+        syntaxErrorsFound: syntaxErrorsFound + postAutoFixValidation.length,
+        executionTimeMs: executionTime
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
 
   } catch (error) {
     console.error('[fix-code] Error:', error);
 
-    await logAgentEvent({
-      agent_type: 'fix-code',
-      status_code: 500,
-      error_code: 'FIX_CODE_ERROR',
-      error_message: error instanceof Error ? error.message : 'Unknown error',
-      error_details: { stack: error instanceof Error ? error.stack : null },
+    // Usar taxonomia de erros para logging padronizado
+    const logEntry = errorToLogEntry('fix-code', error, 'UNKNOWN_ERROR', {
       execution_time_ms: Date.now() - startTime,
       files_count: filesCount,
     });
 
-    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }), {
+    await logAgentEvent(logEntry);
+
+    return new Response(JSON.stringify({
+      error: error instanceof Error ? error.message : 'Unknown error',
+      errorCode: logEntry.error_code
+    }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });

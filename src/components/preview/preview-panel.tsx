@@ -205,7 +205,17 @@ export function PreviewPanel({ isVisualEditMode = false, onComponentSelect }: Pr
 
   // AUTO-SYNC: Sincroniza arquivos quando eles mudam no store (com debounce)
   useEffect(() => {
-    if (status !== 'ready' || files.length === 0) return;
+    // Não sincronizar se container não está pronto
+    if (status !== 'ready') {
+      console.log('[PreviewPanel] ⏸️ AUTO-SYNC aguardando container (status:', status, ')');
+      return;
+    }
+    
+    // Se não temos arquivos, nada a sincronizar
+    if (files.length === 0) {
+      console.log('[PreviewPanel] ⏸️ AUTO-SYNC: nenhum arquivo no store');
+      return;
+    }
 
     // Criar hash para detectar mudanças reais
     const filesHash = files.map(f => {
@@ -214,27 +224,44 @@ export function PreviewPanel({ isVisualEditMode = false, onComponentSelect }: Pr
       return `${f.path}:${content.length}:${sample}`;
     }).join('|');
 
+    // Log detalhado para debug
+    const isFirstSync = lastSyncedFilesRef.current === '';
+    const hasChanged = filesHash !== lastSyncedFilesRef.current;
+    
+    console.log('[PreviewPanel] 🔄 AUTO-SYNC check:', {
+      filesCount: files.length,
+      isFirstSync,
+      hasChanged,
+      lastHashLength: lastSyncedFilesRef.current.length,
+      currentHashLength: filesHash.length
+    });
+
     // Só sincronizar se realmente mudou
-    if (filesHash === lastSyncedFilesRef.current) {
+    if (!hasChanged) {
       return;
     }
 
-    // Debounce
+    // Debounce - mas use tempo menor para primeira sincronização
     if (syncTimeoutRef.current) {
       clearTimeout(syncTimeoutRef.current);
     }
 
+    const debounceTime = isFirstSync ? 200 : 800; // Mais rápido na primeira vez
+    
     syncTimeoutRef.current = setTimeout(async () => {
       lastSyncedFilesRef.current = filesHash;
       console.log(`[PreviewPanel] 📁 Sincronizando ${files.length} arquivos...`);
 
       let syncedCount = 0;
+      let errorCount = 0;
+      
       for (const file of files) {
         try {
           const content = file.content_text || '';
           await updateFile(file.path, content);
           syncedCount++;
         } catch (err) {
+          errorCount++;
           if (err instanceof Error && err.message.includes('Proxy has been released')) {
             console.warn('[WebContainer] Proxy released, skipping sync');
             break;
@@ -243,11 +270,14 @@ export function PreviewPanel({ isVisualEditMode = false, onComponentSelect }: Pr
         }
       }
 
-      console.log(`[PreviewPanel] ✅ ${syncedCount} arquivos sincronizados`);
+      console.log(`[PreviewPanel] ✅ Sync completo: ${syncedCount} ok, ${errorCount} erros`);
 
-      // Forçar refresh do iframe após sincronização
+      // REMOVIDO: Forçar refresh do iframe causava erro "Cannot navigate to URL"
+      // e corrida com o Service Worker. O HMR do Vite deve lidar com as atualizações.
+      // Se necessário, o usuário pode usar o botão de refresh manual.
+      /*
       if (iframeRef.current && activeUrl && syncedCount > 0) {
-        console.log('[PreviewPanel] 🔄 Forçando refresh do iframe');
+        console.log('[PreviewPanel] 🔄 Forçando refresh do iframe após sync');
         try {
           if (iframeRef.current.contentWindow) {
             iframeRef.current.contentWindow.location.reload();
@@ -259,7 +289,8 @@ export function PreviewPanel({ isVisualEditMode = false, onComponentSelect }: Pr
           iframeRef.current.src = iframeRef.current.src;
         }
       }
-    }, 800); // Reduzido de 1000ms para resposta mais rápida
+      */
+    }, debounceTime);
 
     return () => {
       if (syncTimeoutRef.current) {
@@ -268,12 +299,46 @@ export function PreviewPanel({ isVisualEditMode = false, onComponentSelect }: Pr
     };
   }, [files, status, updateFile, activeUrl]);
 
+  
+  const handleStartPreview = useCallback(async () => {
+    console.log('[PreviewPanel] 🎬 handleStartPreview chamado');
+    setIsLoading(true);
+    setIframeError(null);
+
+    // Verificar se temos arquivos no store
+    const currentFiles = useIDEStore.getState().files;
+    console.log('[PreviewPanel] 📂 Arquivos no store:', {
+      count: currentFiles.length,
+      paths: currentFiles.slice(0, 10).map(f => f.path)
+    });
+
+    const fileList = currentFiles.map((f) => ({
+      path: f.path,
+      content: f.content_text || '',
+    }));
+
+    console.log('[PreviewPanel] 📦 Passando para initProject:', {
+      fileCount: fileList.length,
+      projectId: currentProject?.id
+    });
+
+    try {
+      await initProject(fileList, currentProject?.id);
+      console.log('[PreviewPanel] ✅ initProject completou');
+    } catch (err) {
+      console.error('[PreviewPanel] ❌ Erro ao iniciar projeto:', err);
+      setIframeError(err instanceof Error ? err.message : 'Erro desconhecido');
+    }
+  }, [initProject, currentProject?.id]);
+
   // AUTO-START: Inicia preview automaticamente quando o componente monta
   const hasAutoStartedRef = useRef(false);
   const isStartingRef = useRef(false);
   const autoStartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const filesLoadedAfterReadyRef = useRef(false);
 
   useEffect(() => {
+    // Limpar timeout se o componente desmontar
     return () => {
       if (autoStartTimeoutRef.current) {
         clearTimeout(autoStartTimeoutRef.current);
@@ -281,8 +346,18 @@ export function PreviewPanel({ isVisualEditMode = false, onComponentSelect }: Pr
     };
   }, []);
 
+  // CORREÇÃO: Detectar quando arquivos chegam APÓS o container já estar pronto
   useEffect(() => {
-    // Iniciar preview se status está idle e não iniciamos ainda
+    if (status === 'ready' && files.length > 0 && !filesLoadedAfterReadyRef.current) {
+      const currentHash = files.map(f => `${f.path}:${(f.content_text || '').length}`).join('|');
+      if (currentHash !== lastSyncedFilesRef.current) {
+        console.log('[PreviewPanel] 📂 Arquivos do Supabase chegaram após container pronto, sincronizando...');
+        filesLoadedAfterReadyRef.current = true;
+      }
+    }
+  }, [status, files]);
+
+  useEffect(() => {
     if (status === 'idle' && !hasAutoStartedRef.current && !isStartingRef.current) {
       if (files.length > 0) {
         console.log(`[PreviewPanel] 🚀 Auto-iniciando preview com ${files.length} arquivos`);
@@ -292,12 +367,17 @@ export function PreviewPanel({ isVisualEditMode = false, onComponentSelect }: Pr
           isStartingRef.current = false;
         });
       } else {
-        // Esperar 2 segundos para arquivos do Supabase chegarem
         if (!autoStartTimeoutRef.current) {
-          console.log('[PreviewPanel] ⏳ Aguardando arquivos do Supabase...');
+          console.log('[PreviewPanel] ⏳ Aguardando arquivos do Supabase (max 5s)...');
           autoStartTimeoutRef.current = setTimeout(() => {
-            if (status === 'idle' && !hasAutoStartedRef.current) {
+            const currentFiles = useIDEStore.getState().files;
+            if (currentFiles.length > 0) {
+              console.log(`[PreviewPanel] ✅ Arquivos carregados durante espera: ${currentFiles.length}`);
+            } else {
               console.log('[PreviewPanel] ⚠️ Timeout - iniciando com projeto base');
+            }
+            
+            if (!hasAutoStartedRef.current) {
               hasAutoStartedRef.current = true;
               isStartingRef.current = true;
               handleStartPreview().finally(() => {
@@ -305,11 +385,11 @@ export function PreviewPanel({ isVisualEditMode = false, onComponentSelect }: Pr
               });
             }
             autoStartTimeoutRef.current = null;
-          }, 2000);
+          }, 5000);
         }
       }
     }
-  }, [files.length, status]);
+  }, [files.length, status, handleStartPreview]);
 
   const deviceConfig = {
     desktop: { width: '100%', height: '100%' },
@@ -340,28 +420,13 @@ export function PreviewPanel({ isVisualEditMode = false, onComponentSelect }: Pr
     hasAutoStartedRef.current = false;
     isStartingRef.current = false;
     initAttemptRef.current = 0;
+    filesLoadedAfterReadyRef.current = false;
     setIframeError(null);
 
     await handleStartPreview();
-  }, []);
+  }, [handleStartPreview]);
 
-  const handleStartPreview = useCallback(async () => {
-    console.log('[PreviewPanel] 🎬 handleStartPreview chamado');
-    setIsLoading(true);
-    setIframeError(null);
-
-    const fileList = files.map((f) => ({
-      path: f.path,
-      content: f.content_text || '',
-    }));
-
-    try {
-      await initProject(fileList, currentProject?.id);
-    } catch (err) {
-      console.error('[PreviewPanel] Erro ao iniciar projeto:', err);
-      setIframeError(err instanceof Error ? err.message : 'Erro desconhecido');
-    }
-  }, [files, initProject, currentProject?.id]);
+  // handleStartPreview já declarado acima antes dos useEffects
 
   // Handler para quando o iframe carrega
   const handleIframeLoad = useCallback(() => {

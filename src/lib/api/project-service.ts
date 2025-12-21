@@ -346,7 +346,20 @@ export async function sendChatMessage(
 
 // ============= Image Analysis =============
 
-export async function analyzeImage(imageUrl: string, prompt?: string) {
+export interface ImageAnalysisResult {
+  type: 'ui_design' | 'code_error' | 'code_screenshot' | 'general';
+  analysis: string;
+  skipPrd?: boolean;  // Se true, vai direto para chat-stream ao invés de generate-prd
+  errorDetails?: {
+    errorType: string;
+    errorMessage: string;
+    filePath?: string;
+    lineNumber?: number;
+    suggestedFix?: string;
+  };
+}
+
+export async function analyzeImage(imageUrl: string, prompt?: string): Promise<ImageAnalysisResult> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error('Not authenticated');
 
@@ -478,7 +491,7 @@ export async function fixCode(
     allowed_paths?: string[];
     intent?: string;
   }
-): Promise<{ files: FixedFile[]; error?: string; integrityErrors?: string[] }> {
+): Promise<{ files: FixedFile[]; error?: string; integrityErrors?: string[]; syntaxErrorsFound?: number }> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error('Not authenticated');
 
@@ -513,10 +526,11 @@ export async function fixCode(
     }
 
     const result = await response.json();
-    console.log(`[fixCode] Recebido ${result.files?.length || 0} arquivos corrigidos`);
+    console.log(`[fixCode] Recebido ${result.files?.length || 0} arquivos corrigidos. Erros detectados pelo backend: ${result.syntaxErrorsFound || 0}`);
     return {
       files: result.files,
-      integrityErrors: result.integrityErrors
+      integrityErrors: result.integrityErrors,
+      syntaxErrorsFound: result.syntaxErrorsFound
     };
   } catch (error) {
     console.error('[fixCode] Erro de rede:', error);

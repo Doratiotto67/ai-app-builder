@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth/auth-provider';
@@ -10,24 +10,21 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Separator } from '@/components/ui/separator';
 import { Sparkles, Github, Loader2, Mail, AlertCircle, Check, Info } from 'lucide-react';
 
-export default function SignUpPage() {
+function SignUpPageInner() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
   const { signUp, signInWithGoogle, signInWithGitHub } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  useEffect(() => {
-    const reason = searchParams.get('reason');
-    if (reason === 'auth_required') {
-      setInfo('Crie sua conta para começar a criar projetos incríveis!');
-    }
-  }, [searchParams]);
+  const info =
+    searchParams.get('reason') === 'auth_required'
+      ? 'Crie sua conta para começar a criar projetos incríveis!'
+      : null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -235,5 +232,13 @@ export default function SignUpPage() {
         </CardFooter>
       </Card>
     </div>
+  );
+}
+
+export default function SignUpPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignUpPageInner />
+    </Suspense>
   );
 }

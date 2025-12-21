@@ -44,9 +44,11 @@ import type { ChatMessage } from '@/types/database';
 import { useWebContainer } from '@/lib/webcontainer';
 import { useCodeFixer } from '@/hooks/useCodeFixer';
 import { chatLog, extractLog } from '@/lib/debug/logger';
-import { validateAndCompleteFiles, fixAllFiles, fixJSXSyntax as fixSyntax } from '@/lib/code-validation';
-import { checkSyntax } from '@/lib/code-validation/syntax-checker';
-import { autoFix } from '@/lib/code-validation/auto-fix';
+import { 
+  validateAndCompleteFiles, 
+  fixDependencies,
+  validateProject,
+} from '@/lib/code-validation';
 import { fixCode as fixCodeViaAI } from '@/lib/api/project-service';
 // New components for Lovable-style UI
 import { ThreadMessage } from './thread-message';
@@ -180,59 +182,19 @@ function extractFilesFromContent(content: string): ExtractedFile[] {
       // Remover barra inicial para consistência
       let cleanPath = filename.replace(/^\/+/, '');
 
-      // Validar e corrigir código básico
-      const validatedCode = validateAndFixCode(code, language);
+      // Versão simplificada: apenas adiciona o arquivo sem validação complexa
+      console.log(`[extractFiles] ✅ Arquivo extraído: ${cleanPath}`);
 
       files.push({
         path: cleanPath,
-        content: validatedCode,
+        content: code,
         language,
       });
-
-      console.log(`[extractFilesFromContent] Arquivo detectado: ${cleanPath}`);
     }
   }
 
   console.log(`[extractFilesFromContent] Total de arquivos extraídos: ${files.length}`);
   return files;
-}
-
-// Validação e correção robusta de código usando o módulo syntax-fixer
-
-function validateAndFixCode(code: string, language: string): string {
-  // Usar o módulo syntax-fixer para correções de JSX/TSX
-  if (['tsx', 'jsx', 'ts', 'js', 'typescript', 'javascript'].includes(language)) {
-    const result = fixSyntax(code, `file.${language}`);
-    if (result.fixed && result.fixes.length > 0) {
-      console.log(`[validateAndFixCode] Correções aplicadas:`, result.fixes);
-    }
-    return result.code;
-  }
-
-  let fixed = code;
-
-  // Para HTML, garantir espaços entre atributos
-  if (language === 'html' || fixed.includes('<!DOCTYPE') || fixed.includes('<html')) {
-    // Corrigir atributos concatenados sem espaço
-    fixed = fixed.replace(/(\w+="[^"]*")(\w+=")/g, '$1 $2');
-    fixed = fixed.replace(/(\w+='[^']*')(\w+=')/g, '$1 $2');
-
-    // Corrigir /> colado ao atributo
-    fixed = fixed.replace(/(\w+="[^"]*")(\/\>)/g, '$1 $2');
-    fixed = fixed.replace(/(\w+='[^']*')(\/\>)/g, '$1 $2');
-
-    // Garantir espaço antes de />
-    fixed = fixed.replace(/([^\s])\/\>/g, '$1 />');
-
-    // Adicionar crossorigin a scripts externos CDN
-    fixed = fixed.replace(/<script src="(https?:\/\/[^"]+)"\>/g, '<script src="$1" crossorigin>');
-    fixed = fixed.replace(/<link([^>]*) href="(https?:\/\/[^"]+)"([^>]*)\>/g, (match, before, url, after) => {
-      if (match.includes('crossorigin')) return match;
-      return `<link${before} href="${url}"${after} crossorigin>`;
-    });
-  }
-
-  return fixed;
 }
 
 
@@ -409,7 +371,20 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
     const hasReactRouter = convertedContent.includes("'react-router-dom'") || convertedContent.includes('"react-router-dom"');
 
     if (!hasReactRouter) {
-      convertedContent = convertedContent.replace(/<Link\s+href={?(['"])([^'"]+)\1}?>/g, '<a href="$2">');
+      // Substituir <Link> por <a> mantendo os atributos (className, etc)
+      // Robustez: detecta <Link seguido de espaço e atributos, ou self-closing
+      convertedContent = convertedContent.replace(/<Link(\s+[^>]*)>/g, (match, attrs) => {
+        const isSelfClosing = match.includes('/>');
+        const hasHref = match.includes('href=');
+        
+        // Se for self-closing e NÃO tiver href, assumimos que é um ícone (lucide-react) -> Não alterar
+        if (isSelfClosing && !hasHref) {
+          return match;
+        }
+        
+        // Caso contrário (tem href ou não é self-closing), converte para <a>
+        return '<a' + attrs + '>';
+      });
       convertedContent = convertedContent.replace(/<\/Link>/g, '</a>');
     }
 
@@ -419,8 +394,119 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
     return { path: convertedPath, content: convertedContent };
   }, []);
 
+  // Garantir que arquivos de estrutura base existam
+  const ensureBaseStructure = useCallback((
+    files: Array<{ path: string; content: string; language: string }>,
+    structure: { hasPackageJson: boolean; hasIndexHtml: boolean; hasMainTsx: boolean; hasAppTsx: boolean }
+  ): Array<{ path: string; content: string; language: string }> => {
+    const structureFiles: Array<{ path: string; content: string; language: string }> = [];
+
+    // 1. package.json
+    if (!structure.hasPackageJson) {
+      structureFiles.push({
+        path: 'package.json',
+        content: JSON.stringify({
+          name: 'my-app',
+          version: '0.1.0',
+          private: true,
+          type: 'module',
+          scripts: {
+            dev: 'vite --host',
+            build: 'vite build',
+            preview: 'vite preview'
+          },
+          dependencies: {
+            react: '^18.2.0',
+            'react-dom': '^18.2.0',
+            'react-router-dom': '^6.20.0',
+            'lucide-react': '^0.294.0',
+            clsx: '^2.0.0',
+            'tailwind-merge': '^2.1.0',
+            'framer-motion': '^10.16.5'
+          },
+          devDependencies: {
+            '@types/react': '^18.2.0',
+            '@types/react-dom': '^18.2.0',
+            '@vitejs/plugin-react': '^4.2.0',
+            autoprefixer: '^10.4.16',
+            postcss: '^8.4.32',
+            tailwindcss: '^3.3.6',
+            typescript: '^5.3.3',
+            vite: '^5.0.8'
+          }
+        }, null, 2),
+        language: 'json'
+      });
+    }
+
+    // 2. index.html
+    if (!structure.hasIndexHtml) {
+      structureFiles.push({
+        path: 'index.html',
+        content: `<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>`,
+        language: 'html'
+      });
+    }
+
+    // 3. src/main.tsx
+    if (!structure.hasMainTsx) {
+      structureFiles.push({
+        path: 'src/main.tsx',
+        content: `import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import App from './App';
+import './index.css';
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  </React.StrictMode>
+);`,
+        language: 'tsx'
+      });
+    }
+
+    // 4. src/App.tsx (se não tiver)
+    if (!structure.hasAppTsx) {
+      structureFiles.push({
+        path: 'src/App.tsx',
+        content: `import React from 'react';
+
+export default function App() {
+  return (
+    <div className="min-h-screen bg-white dark:bg-gray-900 p-8">
+      <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
+        Bem-vindo!
+      </h1>
+      <p className="mt-4 text-gray-600 dark:text-gray-400">
+        Sua aplicação está rodando.
+      </p>
+    </div>
+  );
+}`,
+        language: 'tsx'
+      });
+    }
+
+    return structureFiles;
+  }, []);
+
   // Criar arquivos extraídos - ESCREVE NO STORE E NO WEBCONTAINER
-  // AGORA COM VALIDAÇÃO DE IMPORTS, GERAÇÃO DE STUBS E CORREÇÃO VIA IA
+  // PIPELINE OTIMIZADO: CONVERSÃO VITE → AUTO-FIX → VALIDAÇÃO → IA (CONDICIONAL)
   const handleCreateFiles = useCallback(async (filesToCreate?: ExtractedFile[]) => {
     const targets = filesToCreate && Array.isArray(filesToCreate) ? filesToCreate : extractedFiles;
     if (targets.length === 0) return;
@@ -428,64 +514,40 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
     setWritingFiles(true);
 
     try {
-      // ETAPA 0: Auto-Fix e Validação Anti-Erro (Fase 3)
-      const autoFixedTargets = targets.map(f => ({
-        ...f,
-        content: autoFix(f.content, f.path)
-      }));
+      console.log(`%c[ChatPanel] 🚀 Processando ${targets.length} arquivos`, 'color: #6366f1; font-weight: bold; font-size: 14px');
 
-      // Validar sintaxe e logar erros (apenas informativo por enquanto, não bloqueia)
-      let syntaxErrorsFound = 0;
-      autoFixedTargets.forEach(f => {
-        const { valid, errors } = checkSyntax(f.content, f.path);
-        if (!valid) {
-          syntaxErrorsFound++;
-          console.groupCollapsed(`%c[SyntaxCheck] ❌ Falha em ${f.path}`, 'color: #ef4444; font-weight: bold');
-          if (Array.isArray(errors)) {
-            errors.forEach(err => console.log(`%c• ${err}`, 'color: #f87171'));
-          } else {
-            console.error(errors);
-          }
-          console.groupEnd();
-          chatLog.error(`Erro de sintaxe em ${f.path}`, { errors });
-        }
+      // ==== ETAPA 1: CONVERSÃO VITE ====
+      console.log(`%c[ChatPanel] 🔄 Convertendo arquivos Next.js → Vite`, 'color: #8b5cf6; font-weight: bold');
+      const convertedTargets = targets.map(f => {
+        const { path: vitePath, content: viteContent } = convertToVitePath(f.path, f.content);
+        console.log(`[ChatPanel] Conversão: ${f.path} → ${vitePath}`);
+        return { 
+          path: vitePath, 
+          content: viteContent, 
+          language: f.language 
+        };
       });
 
-      if (syntaxErrorsFound > 0) {
-        console.log(`[ChatPanel] ⚠️ Encontrados erros de sintaxe em ${syntaxErrorsFound} arquivos. A validação posterior tentará corrigir.`);
-      }
-
-      // ETAPA 1: Corrigir sintaxe básica de todos os arquivos PRIMEIRO (Legado + Novo)
-      const { files: syntaxFixedFiles, totalFixes, fixesByFile } = fixAllFiles(
-        autoFixedTargets.map(f => ({ path: f.path, content: f.content, language: f.language }))
-      );
-
-      if (totalFixes > 0) {
-        console.log(`[ChatPanel] 🔧 ${totalFixes} correções de sintaxe aplicadas`);
-        chatLog.info(`Correções de sintaxe aplicadas`, { fixesByFile });
-      }
-
-      // ETAPA 2: Validar imports e gerar stubs para componentes faltantes
-      const { files: validatedFiles, stubsGenerated, validation } = validateAndCompleteFiles(syntaxFixedFiles);
+      // ==== ETAPA 2: VALIDAR IMPORTS ====
+      const { files: validatedFiles, stubsGenerated, validation } = validateAndCompleteFiles(convertedTargets);
 
       if (stubsGenerated > 0) {
-        console.groupCollapsed(`%c[ChatPanel] ⚠️ ${stubsGenerated} componentes stub gerados`, 'color: #fbbf24; font-weight: bold');
-        console.table(validation.missingImports.map(m => ({ Module: m.importPath, Import: m.importedName })));
-        console.groupEnd();
+        console.log(`%c[ChatPanel] ⚠️ ${stubsGenerated} componentes stub gerados`, 'color: #fbbf24; font-weight: bold');
         chatLog.warn(`Gerados ${stubsGenerated} componentes placeholder`, {
           missing: validation.missingImports.map(m => m.importedName)
         });
       }
 
-      // ETAPA 3: AI Fix Agent (Fix-Code)
-      console.log(`[ChatPanel] 🤖 Iniciando agente de correção (Fix-Code)...`);
+      // ==== ETAPA 3: VERIFICAR ESTRUTURA E CHAMAR FIX-CODE ====
+      const projectValidation = validateProject(validatedFiles);
       let finalFiles = validatedFiles;
 
+      // Sempre chamar fix-code para garantir código correto
+      console.log(`%c[ChatPanel] 🤖 Chamando fix-code para garantir código válido...`, 'color: #06b6d4; font-weight: bold');
+      chatLog.info('Validando e corrigindo código (IA)...');
+      
       try {
-        // Notificar UI se possível (opcional, já que estamos dentro do handler)
-        // Se tivéssemos acesso ao setThinkingSteps aqui seria ideal, mas vamos confiar no log por enquanto
-
-        const { files: aiFixedFiles, error: aiError } = await fixCodeViaAI(validatedFiles.map(f => ({
+        const { files: aiFixedFiles, error: aiError } = await fixCodeViaAI(finalFiles.map(f => ({
           path: f.path,
           content: f.content,
           language: f.language
@@ -493,41 +555,39 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
 
         if (aiError) {
           console.error('[ChatPanel] Erro no agente fix-code:', aiError);
-          // Fallback para arquivos validados apenas
-        } else if (aiFixedFiles) {
-          console.groupCollapsed(`%c[ChatPanel] ✅ Agente retornou ${aiFixedFiles.length} arquivos processados`, 'color: #4ade80; font-weight: bold');
-          console.table(aiFixedFiles.map(f => ({
-            Path: f.path,
-            Language: f.language,
-            Modified: f.content !== f.path // Simplificação (na prática precisaria comparar)
-          })));
-          console.groupEnd();
+          chatLog.error('fix-code retornou erro', { error: aiError });
+        } else if (aiFixedFiles && aiFixedFiles.length > 0) {
+          console.log(`%c[ChatPanel] ✅ fix-code retornou ${aiFixedFiles.length} arquivos`, 'color: #4ade80; font-weight: bold');
+          
           finalFiles = aiFixedFiles.map(f => ({
             path: f.path,
             content: f.content,
             language: f.language
           }));
+
+          chatLog.success('Código processado via IA', {
+            filesFixed: aiFixedFiles.filter(f => f.wasFixed).length,
+            totalFiles: aiFixedFiles.length
+          });
         }
       } catch (err) {
-        console.error('[ChatPanel] Falha crítica ao chamar fix-code:', err);
-        // Continua com arquivos validados localmente
+        console.error('[ChatPanel] Falha ao chamar fix-code:', err);
+        chatLog.error('Falha ao chamar fix-code', { error: String(err) });
+        // Continuar com os arquivos originais mesmo se fix-code falhar
       }
 
-      console.log(`[ChatPanel] ⚡ Processando ${finalFiles.length} arquivos para salvamento...`);
+      // ==== ETAPA 4: ADICIONAR ARQUIVOS BASE SE FALTAREM ====
+      const structureFiles = ensureBaseStructure(finalFiles, projectValidation.structure);
+      if (structureFiles.length > 0) {
+        console.log(`[ChatPanel] 📦 Adicionados ${structureFiles.length} arquivos de estrutura base`);
+      }
 
-      // Convert all files first (sync)
-      const convertedFiles = finalFiles.map(file => {
-        const { path: convertedPath, content: convertedContent } = convertToVitePath(file.path, file.content);
-        console.log(`[ChatPanel] Convertendo: ${file.path} → ${convertedPath}`);
-        return {
-          path: convertedPath,
-          content: convertedContent,
-          language: file.language
-        };
-      });
+      // ==== ETAPA 5: CORRIGIR DEPENDÊNCIAS ====
+      const allFiles = fixDependencies([...finalFiles, ...structureFiles]);
+      console.log(`[ChatPanel] ⚡ Finalizando ${allFiles.length} arquivos`);
 
-      // 1. Add all files to store (sync, fast)
-      for (const file of convertedFiles) {
+      // ==== ETAPA 6: ADICIONAR AO STORE ====
+      for (const file of allFiles) {
         addFile({
           id: crypto.randomUUID(),
           project_id: projectId,
@@ -545,9 +605,9 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
         });
       }
 
-      // 2. Save to Supabase in BATCH (single session, parallel requests)
+      // ==== ETAPA 7: SALVAR NO SUPABASE ====
       if (projectId && user) {
-        saveFilesBatch(projectId, convertedFiles)
+        saveFilesBatch(projectId, allFiles)
           .then(result => {
             console.log(`[Supabase] ✓ ${result.saved.length} arquivos salvos`);
             if (result.errors.length > 0) {
@@ -557,11 +617,11 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
           .catch(err => console.error('[Supabase] Batch save failed:', err));
       }
 
-      // 3. Write to WebContainer in PARALLEL (wait for all writes to complete)
+      // ==== ETAPA 8: ESCREVER NO WEBCONTAINER ====
       if (containerStatus === 'ready') {
-        console.log(`[ChatPanel] 📝 Escrevendo ${convertedFiles.length} arquivos no WebContainer...`);
+        console.log(`[ChatPanel] 📝 Escrevendo ${allFiles.length} arquivos no WebContainer...`);
         await Promise.all(
-          convertedFiles.map(file =>
+          allFiles.map((file: { path: string; content: string }) =>
             writeToContainer(file.path, file.content)
               .then(() => console.log(`[WebContainer] ✓ ${file.path}`))
               .catch(err => console.error(`[WebContainer] ✗ ${file.path}:`, err))
@@ -570,18 +630,15 @@ export function ChatPanel({ projectId }: ChatPanelProps) {
         console.log(`[ChatPanel] ✅ Todos os arquivos escritos no WebContainer`);
       }
 
-      const createdFiles = convertedFiles.map(f => f.path);
-
       setFilesCreated(true);
-      if (createdFiles.length > 0) {
-        refreshPreview();
-      }
+      refreshPreview();
+
     } catch (error) {
       console.error('Failed to create files:', error);
     } finally {
       setWritingFiles(false);
     }
-  }, [extractedFiles, convertToVitePath, addFile, projectId, user, containerStatus, updateFile, refreshPreview, writeToContainer, fixCodeViaAI]);
+  }, [extractedFiles, convertToVitePath, addFile, projectId, user, containerStatus, refreshPreview, writeToContainer, ensureBaseStructure, validateProject, validateAndCompleteFiles, fixDependencies, fixCodeViaAI, chatLog]);
 
   // Image Helper Functions
   const convertImageToWebP = useCallback((file: File): Promise<string> => {
@@ -795,6 +852,8 @@ ${targetContent}
               const imageDescriptions: string[] = [];
               const currentInput = input.trim();
               const currentImages = [...attachedImages];
+              let shouldSkipPrd = false;
+              let codeErrorAnalysis = '';
 
               const results = await Promise.all(
                 currentImages.map(img =>
@@ -808,6 +867,13 @@ ${targetContent}
               for (const result of results) {
                 if (result?.analysis) {
                   imageDescriptions.push(result.analysis);
+                  
+                  // Verificar se é imagem com erro de código
+                  if (result.type === 'code_error' && result.skipPrd) {
+                    shouldSkipPrd = true;
+                    codeErrorAnalysis = result.analysis;
+                    console.log('[ChatPanel] ⚠️ Imagem com erro de código detectada - pulando PRD');
+                  }
                 }
               }
 
@@ -818,6 +884,85 @@ ${targetContent}
               setThinkingSteps(prev => prev.map(s =>
                 s.id === 'analyze' ? { ...s, status: 'done' } : s
               ));
+
+              // SE for imagem com erro de código, PULAR generate-prd e ir direto ao chat-stream
+              if (shouldSkipPrd) {
+                console.log('[ChatPanel] 🚀 Pulando PRD - enviando diretamente para chat-stream');
+                
+                // Atualizar mensagem do usuário para incluir a análise do erro
+                setThinkingSteps(prev => [...prev, { id: 'code', label: '🔧 Analisando erro e gerando correção...', status: 'running' }]);
+
+                // Preparar prompt específico para correção de erro
+                const errorFixPrompt = `O usuário enviou uma imagem com um erro de código. Analise e sugira como corrigir.
+
+${codeErrorAnalysis}
+
+${currentInput ? `\n\nMensagem do usuário: ${currentInput}` : ''}
+
+Por favor, identifique o arquivo com erro e forneça o código corrigido.`;
+
+                let errorFixContent = '';
+                
+                try {
+                  await sendChatMessage(
+                    projectId,
+                    currentThread.id,
+                    errorFixPrompt,
+                    (delta: string) => {
+                      errorFixContent += delta;
+                      appendStreamingContent(delta);
+                    },
+                    (phase?: string) => {
+                      if (phase === 'thinking') {
+                        setThinkingSteps(prev => prev.map(s =>
+                          s.id === 'code' ? { ...s, label: '💭 Pensando...', status: 'running' } : s
+                        ));
+                      }
+                    },
+                    () => {
+                      // Done - add message and extract files
+                      const assistantMessage: ChatMessage = {
+                        id: crypto.randomUUID(),
+                        project_id: projectId,
+                        thread_id: currentThread.id,
+                        role: 'assistant',
+                        content: errorFixContent,
+                        content_json: null,
+                        attachments: null,
+                        created_by: null,
+                        created_at: new Date().toISOString(),
+                      };
+                      addMessage(assistantMessage);
+                      setStreamingContent('');
+                      
+                      // Extract files from response
+                      const extracted = extractFilesFromContent(errorFixContent);
+                      if (extracted.length > 0) {
+                        setExtractedFiles(extracted);
+                        console.log(`[ChatPanel] 📁 ${extracted.length} arquivos extraídos da correção`);
+                      }
+                      
+                      setThinkingSteps(prev => prev.map(s =>
+                        s.id === 'code' ? { ...s, status: 'done' } : s
+                      ));
+                      setIsStreaming(false);
+                    },
+                    (error: Error) => {
+                      console.error('[ChatPanel] Erro no stream para correção:', error);
+                      setThinkingSteps(prev => prev.map(s =>
+                        s.id === 'code' ? { ...s, status: 'error' } : s
+                      ));
+                      setIsStreaming(false);
+                    },
+                    undefined, // images
+                    abortControllerRef.current?.signal
+                  );
+                } catch (streamError) {
+                  console.error('[ChatPanel] Erro no stream para correção:', streamError);
+                  setIsStreaming(false);
+                }
+                return; // Sair do fluxo - já processou
+              }
             } catch (err) {
               console.warn('[ChatPanel] Erro na análise de imagens:', err);
               setThinkingSteps(prev => prev.map(s =>
@@ -826,7 +971,7 @@ ${targetContent}
             }
           }
 
-          // STEP 2: Generate PRD (streaming)
+          // STEP 2: Generate PRD (streaming) - só executa se não pulou acima
           setThinkingSteps(prev => [...prev, { id: 'prd', label: '📝 Gerando PRD...', status: 'running' }]);
 
           let prdContent = '';
@@ -1059,13 +1204,17 @@ ${targetContent}
           setIsStreaming(false);
           setStreamingContent('');
 
-          // IMPERATIVE AUTO-SAVE: Extract and create files immediately (Demo mode)
+            // IMPERATIVE AUTO-SAVE: Extract and create files immediately (Demo mode)
           const extracted = extractFilesFromContent(fullContent);
           if (extracted.length > 0) {
             console.log(`[ChatPanel] Auto-salvando ${extracted.length} arquivos (Demo)`);
             setExtractedFiles(extracted);
             setFilesCreated(false);
-            handleCreateFiles(extracted);
+            // Await para garantir que o processo termine antes de liberar o estado
+            handleCreateFiles(extracted).catch(err => {
+              console.error('[ChatPanel] Auto-save error:', err);
+              chatLog.error('Erro no auto-save', { error: String(err) });
+            });
           }
         }
       } catch (error) {
@@ -1453,23 +1602,35 @@ ${targetContent}
                         if (fixedCount > 0) {
                           console.log(`[FixCode] ${fixedCount} arquivos corrigidos, aplicando...`);
 
-                          // Aplicar correções no store e WebContainer
+                          // 1. Primeiro, atualizar TODOS os arquivos no store (síncrono)
                           for (const fixedFile of fixedFiles) {
-                            // 1. Atualizar no store
                             const existingFile = files.find(f => f.path === fixedFile.path);
                             if (existingFile) {
                               updateFile(existingFile.id, { content_text: fixedFile.content });
+                              console.log(`[FixCode] ✓ ${fixedFile.path} atualizado no store`);
                             }
+                          }
 
-                            // 2. Escrever no WebContainer (se estiver pronto)
-                            if (containerStatus === 'ready') {
-                              try {
-                                await writeToContainer(fixedFile.path, fixedFile.content);
-                                console.log(`[FixCode] ✓ ${fixedFile.path} atualizado no WebContainer`);
-                              } catch (err) {
-                                console.warn(`[FixCode] Não foi possível atualizar ${fixedFile.path} no WebContainer:`, err);
-                              }
-                            }
+                          // 2. Depois, escrever TODOS no WebContainer em paralelo e AGUARDAR
+                          if (containerStatus === 'ready') {
+                            console.log(`[FixCode] Escrevendo ${fixedCount} arquivos no WebContainer...`);
+                            
+                            const writeResults = await Promise.allSettled(
+                              fixedFiles.map(async (fixedFile: any) => {
+                                try {
+                                  await writeToContainer(fixedFile.path, fixedFile.content);
+                                  console.log(`[FixCode] ✓ ${fixedFile.path} escrito no WebContainer`);
+                                  return fixedFile.path;
+                                } catch (err) {
+                                  console.warn(`[FixCode] ✗ Falha ao escrever ${fixedFile.path}:`, err);
+                                  throw err;
+                                }
+                              })
+                            );
+
+                            const successCount = writeResults.filter(r => r.status === 'fulfilled').length;
+                            const failCount = writeResults.filter(r => r.status === 'rejected').length;
+                            console.log(`[FixCode] WebContainer: ${successCount} sucesso, ${failCount} falhas`);
                           }
 
                           // 3. Mostrar mensagem de sucesso com detalhes
@@ -1489,22 +1650,43 @@ ${targetContent}
                             created_by: null
                           } as ChatMessage);
 
-                          // 4. Atualizar preview
+                          // 4. Agora sim, atualizar preview DEPOIS que tudo foi escrito
+                          console.log(`[FixCode] ✅ Todas as escritas completadas, atualizando preview...`);
                           refreshPreview();
 
                         } else {
-                          addMessage({
-                            id: crypto.randomUUID(),
-                            project_id: projectId,
-                            thread_id: currentThread?.id || '',
-                            role: 'assistant',
-                            content: `✅ Nenhum erro de sintaxe encontrado nos arquivos.`,
-                            created_at: new Date().toISOString(),
-                            content_json: null,
-                            attachments: null,
-                            created_by: null
-                          } as ChatMessage);
+                          // Caso onde NENHUM arquivo foi retornado como "fixed"
+                          // Mas precisamos saber se foi porque estava tudo certo ou porque a IA falhou.
+                          
+                          if ((result.syntaxErrorsFound || 0) > 0) {
+                             addMessage({
+                              id: crypto.randomUUID(),
+                              project_id: projectId,
+                              thread_id: currentThread?.id || '',
+                              role: 'assistant',
+                              content: `⚠️ **Atenção:** Foram detectados ${(result.syntaxErrorsFound || 0)} erro(s) de sintaxe, mas a IA não retornou correções. Isso pode indicar uma falha na geração. Tente novamente.`,
+                              created_at: new Date().toISOString(),
+                              content_json: null,
+                              attachments: null,
+                              created_by: null
+                            } as ChatMessage);
+                          } else {
+                            addMessage({
+                              id: crypto.randomUUID(),
+                              project_id: projectId,
+                              thread_id: currentThread?.id || '',
+                              role: 'assistant',
+                              content: `✅ Nenhum erro de sintaxe encontrado nos arquivos.`,
+                              created_at: new Date().toISOString(),
+                              content_json: null,
+                              attachments: null,
+                              created_by: null
+                            } as ChatMessage);
+                          }
                         }
+                        
+                        // Pequeno delay para garantir que o usuário veja o estado final antes de liberar o botão
+                        await new Promise(resolve => setTimeout(resolve, 1500));
 
                       } catch (error) {
                         console.error('[FixCode] Erro:', error);

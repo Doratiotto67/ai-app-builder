@@ -13,7 +13,7 @@ import {
   convertToFileTree,
 } from './webcontainer';
 import { webcontainerLog } from '@/lib/debug/logger';
-import { autoFix } from '@/lib/code-validation/auto-fix';
+
 
 interface UseWebContainerOptions {
   autoStart?: boolean;
@@ -69,10 +69,7 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
 // Função auxiliar para transformar arquivos do usuário para o formato Vite/WebContainer
 function transformFileForVite(path: string, content: string): { path: string, content: string } {
   let transformedPath = path;
-
-  // ==== ETAPA 0: APLICAR AUTO-FIX V5 PARA CORRIGIR ERROS DE SINTAXE ====
-  // Isso corrige className multilinha, imports quebrados, etc.
-  let transformedContent = autoFix(content, path);
+  let transformedContent = content;
 
   // SANITIZAÇÃO DE PATH
   transformedPath = transformedPath.replace(/^\/+/, ''); // Remover barras iniciais

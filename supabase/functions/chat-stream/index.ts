@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { logAgentEvent } from '../_shared/agent-logger.ts';
+import { logAgentEvent, errorToLogEntry } from '../_shared/agent-logger.ts';
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 
@@ -600,20 +600,20 @@ Português do Brasil`;
   } catch (error) {
     console.error('Chat stream error:', error);
 
-    // Registrar log de erro
-    await logAgentEvent({
+    // Usar taxonomia de erros para logging padronizado
+    const logEntry = errorToLogEntry('chat-stream', error, 'UNKNOWN_ERROR', {
       project_id: projectId,
       user_id: userId,
-      agent_type: 'chat-stream',
-      status_code: 500,
-      error_code: 'CHAT_STREAM_ERROR',
-      error_message: error instanceof Error ? error.message : 'Unknown error',
-      error_details: { stack: error instanceof Error ? error.stack : null },
       execution_time_ms: Date.now() - startTime,
     });
 
+    await logAgentEvent(logEntry);
+
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
+      JSON.stringify({
+        error: error instanceof Error ? error.message : 'Unknown error',
+        errorCode: logEntry.error_code
+      }),
       {
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

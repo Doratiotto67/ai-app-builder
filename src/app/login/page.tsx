@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth/auth-provider';
@@ -10,22 +10,19 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Separator } from '@/components/ui/separator';
 import { Sparkles, Github, Loader2, Mail, AlertCircle, Info } from 'lucide-react';
 
-export default function LoginPage() {
+function LoginPageInner() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const { signIn, signInWithGoogle, signInWithGitHub } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  useEffect(() => {
-    const reason = searchParams.get('reason');
-    if (reason === 'auth_required') {
-      setInfo('Você precisa fazer login para criar um novo projeto.');
-    }
-  }, [searchParams]);
+  const info =
+    searchParams.get('reason') === 'auth_required'
+      ? 'Você precisa fazer login para criar um novo projeto.'
+      : null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -194,5 +191,13 @@ export default function LoginPage() {
         </CardFooter>
       </Card>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginPageInner />
+    </Suspense>
   );
 }

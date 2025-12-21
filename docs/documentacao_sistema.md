@@ -19,6 +19,7 @@
 15. [Bibliotecas Disponíveis no WebContainer](#15-bibliotecas-disponíveis-no-webcontainer)
 16. [Limitações e Pontos de Atenção](#16-limitações-e-pontos-de-atenção)
 17. [Troubleshooting Avançado](#17-troubleshooting-avançado)
+18. [Taxonomia de Erros (Debug Rápido)](#18-taxonomia-de-erros-debug-rápido)
 
 ---
 
@@ -220,36 +221,31 @@ flowchart LR
 
 ## 7. Camada de Validação (Syntax Fixer & Import Validator)
 
-### 7.1. Syntax Fixer (`lib/code-validation/syntax-fixer.ts`)
+### 7.1. Syntax Fixer (`lib/code-validation/auto-fix.ts`)
 
-Motor de correção heurística com **16 regras de autocorreção**:
+Motor de correção heurística v6.0 com **20+ regras de autocorreção**:
 
 | #  | Regra                | Descrição                                                                      |
 | -- | -------------------- | ------------------------------------------------------------------------------ |
 | 1  | `use client` removal | Remove diretiva desnecessária no Vite                                          |
 | 2  | Import truncado      | Completa imports cortados pela IA                                              |
 | 3  | Import sem origem    | Adiciona `from 'lucide-react'` quando falta                                    |
-| 4  | className truncado   | Fecha strings de classe incompletas                                            |
-| 5  | Self-closing tags    | Converte `<input>` → `<input />` (13 tags)                                     |
-| 6  | Espaço antes de `/>`| Garante `<img />` não `<img/>`                                                 |
+| 4  | className truncado   | Fecha strings de classe incompletas (agora em todas as linhas)                 |
+| 5  | Self-closing tags    | Converte `<input>` → `<input />` (apenas void elements)                        |
+| 6  | **Backtick Clean**   | Remove backticks (`) incorretos dentro de aspas duplas em className            |
 | 7  | Placeholders `...`   | Remove linhas de placeholder da IA                                             |
 | 8  | Export default       | Adiciona se função exportável não tem                                          |
-| 9  | **Tag Balancer**     | Fecha 21 tags HTML (`div`, `section`, `header`, `footer`, `main`, `nav`, etc.) |
-| 10 | Chaves `{}`          | Balanceia abertura/fechamento                                                  |
-| 11 | Parênteses `()`      | Balanceia abertura/fechamento                                                  |
-| 12 | Texto solto          | Remove linhas de texto sem tags                                                |
-| 13 | Linhas vazias        | Remove excesso de `\n\n\n`                                                     |
-| 14 | Newline final        | Garante arquivo termina com `\n`                                               |
-| 15 | **Return truncado**  | Detecta `return (` sem `)` e fecha estrutura JSX                               |
-| 16 | Componente vazio     | Adiciona return placeholder se função sem JSX                                  |
+| 9  | **Tag Balancer**     | Fecha tags HTML/interativas abertas e não fechadas                             |
+| 10 | Chaves `{}`          | Balanceia abertura/fechamento global                                           |
+| 11 | Parênteses `()`      | Balanceia abertura/fechamento global                                           |
+| 12 | **Aspas Truncadas**  | Detecta e fecha aspas duplas/simples em atributos cortados (`/>` na próxima linha) |
+| 13 | **JSX Truncado**     | Fecha tags como `<div>` que terminam sem `>` por falha de streaming            |
+| 14 | Return truncado      | Detecta `return (` sem `)` e fecha estrutura JSX                               |
 
-### 7.2. Import Validator
+### 7.2. Import Validator & Shared Logic
 
-- **Deep Scan**: Analisa o corpo do arquivo em busca de
-  `import { X } from './Y'`.
-- **Stub Generation**: Cria um mock visual para componentes UI ou libs internas
-  não definidas, garantindo que o WebContainer consiga subir o servidor de dev
-  mesmo com partes faltando.
+- **Backend Sync**: O motor de `auto-fix` é compartilhado entre o frontend e a Edge Function `fix-code`, garantindo que a correção seja aplicada em múltiplos níveis.
+- **Stub Generation**: Cria um mock visual para componentes UI ou libs internas não definidas.
 
 ---
 
@@ -330,7 +326,15 @@ O sistema não faz deploy real de cada mudança; ele virtualiza o ambiente:
 type Status = 'idle' | 'booting' | 'installing' | 'starting' | 'ready' | 'error';
 ```
 
-### 9.2. Fluxo de Inicialização
+### 9.2. Estabilização do Preview e MIME Types
+
+Para evitar o erro crítico de MIME type ("Unexpected text/html"), o runtime foi configurado de forma ultraconservadora:
+
+- **HMR Disabled**: O Hot Module Replacement foi desativado no `vite.config.ts`. As mudanças agora exigem um refresh do iframe.
+- **Fast Refresh Disabled**: O React Fast Refresh foi desativado para evitar injeção de scripts que causavam conflitos de MIME type no WebContainer.
+- **SPA Fallback**: Configurado `appType: 'spa'` para garantir que qualquer erro na resolução de módulos não quebre o servidor.
+
+### 9.3. Fluxo de Inicialização
 
 1. `boot()` - Inicializa o WebContainer
 2. `createBaseProject()` - Cria estrutura base Vite + React + Tailwind
@@ -597,22 +601,176 @@ LIMIT 10;
 
 ## Changelog
 
-### v2.0.0 (2024-12-20)
+### v6.0.0 (2025-12-20)
 
-**Novas Funcionalidades:**
-- ✨ Edge Function `fix-code` para correção automática de código via IA
-- ✨ Sistema de logging centralizado (`agent_logs`) para todas as Edge Functions
-- ✨ Helper compartilhado `agent-logger.ts` para registro padronizado
-- ✨ Função `transformFileForVite` com conversão robusta Next.js → Vite
-
-**Melhorias:**
-- 🔧 Remoção automática de `BrowserRouter` duplicado no App.tsx
-- 🔧 Proteção forçada do `main.tsx` com estrutura correta
-- 🔧 Suporte a template strings problemáticas em className
-- 🔧 Modelo atualizado para `google/gemini-3-flash-preview` no chat-stream
-- 🔧 Modelo `z-ai/glm-4.6` para correções rápidas (baixa latência)
+**Infraestrutura & Resiliência:**
+- ✨ **Auto-Fix v6.0**: Novas heurísticas para backticks misturados e fechamento de tags truncadas em todas as linhas.
+- ✨ **Estabilização de MIME Types**: Desativação de HMR e Fast Refresh no WebContainer para evitar erros de carramento de script.
+- ✨ **UI de Preview**: Adição de loading overlays e botão de reinicialização forçada do container.
+- ✨ **Sincronização Cloud**: Deploy unificado do motor de correção nas Edge Functions `fix-code` e `chat-stream`.
 
 **Correções:**
-- 🐛 Fix para tags JSX self-closing seguidas de conteúdo
-- 🐛 Fix para expressões vazias `{}` em JSX
-- 🐛 Fix para imports de bibliotecas não disponíveis
+- � Fix: Erro "Expected > but found `" em atributos className.
+- � Fix: Resposta 404/HTML em arquivos JS devido ao HMR do Vite.
+- 🐛 Fix: Conversão indevida de tags div/span para self-closing.
+- 🐛 Fix: Erro TS7034 na página de listagem de projetos.
+
+---
+
+## 18. Taxonomia de Erros (Debug Rápido)
+
+O sistema utiliza códigos de erro padronizados para facilitar a identificação e debug de problemas. Em 10 segundos você consegue saber se o problema foi de **IA**, **parser**, **integridade**, ou **runtime**.
+
+### 18.1. Categorias de Erro
+
+| Categoria | Descrição |
+|-----------|-----------|
+| `LLM` | Erros relacionados à IA/modelo (streaming, JSON, timeout) |
+| `SYNTAX` | Erros de sintaxe de código (JSX, TypeScript) |
+| `IMPORT` | Erros de imports/módulos (arquivos faltantes, circular) |
+| `STUB` | Erros de geração de stubs |
+| `WEBCONTAINER` | Erros do WebContainer (boot, install, devserver) |
+| `STREAM` | Erros de streaming SSE |
+| `VALIDATION` | Erros de validação geral |
+| `NETWORK` | Erros de rede/API |
+
+### 18.2. Códigos de Erro (Principais)
+
+#### LLM Errors (Problemas de IA)
+
+| Código | Descrição | Severidade |
+|--------|-----------|------------|
+| `LLM_STREAM_PARSE_ERROR` | Perda de chunk / streaming incompleto | HIGH |
+| `LLM_JSON_INVALID` | Modelo devolveu JSON quebrado/inválido | HIGH |
+| `LLM_RESPONSE_EMPTY` | Modelo não retornou resposta | MEDIUM |
+| `LLM_RESPONSE_TRUNCATED` | Resposta do modelo foi truncada | MEDIUM |
+| `LLM_TIMEOUT` | Timeout na chamada ao modelo | HIGH |
+| `LLM_RATE_LIMITED` | Rate limit atingido | MEDIUM |
+| `LLM_MODEL_UNAVAILABLE` | Modelo indisponível | CRITICAL |
+| `LLM_CONTEXT_OVERFLOW` | Contexto excedeu limite do modelo | HIGH |
+
+#### Syntax Errors (Problemas de Código)
+
+| Código | Descrição | Severidade |
+|--------|-----------|------------|
+| `SYNTAX_INVALID_POST_FIX` | AutoFix aplicado mas código ainda inválido | HIGH |
+| `SYNTAX_JSX_MALFORMED` | JSX com sintaxe incorreta | HIGH |
+| `SYNTAX_TYPESCRIPT_ERROR` | Erro de TypeScript | MEDIUM |
+| `SYNTAX_UNTERMINATED_STRING` | String não terminada | HIGH |
+| `SYNTAX_UNCLOSED_TAG` | Tag JSX não fechada | HIGH |
+| `SYNTAX_BRACKET_MISMATCH` | Parênteses/chaves não combinando | HIGH |
+
+#### Import Errors (Problemas de Integridade)
+
+| Código | Descrição | Severidade |
+|--------|-----------|------------|
+| `IMPORT_GRAPH_BROKEN` | Import aponta para arquivo inexistente | HIGH |
+| `IMPORT_CIRCULAR_DETECTED` | Dependência circular detectada | MEDIUM |
+| `IMPORT_MODULE_NOT_FOUND` | Módulo não encontrado | HIGH |
+| `IMPORT_INVALID_PATH` | Caminho de import inválido | MEDIUM |
+| `IMPORT_DEFAULT_MISSING` | Export default não encontrado | MEDIUM |
+| `IMPORT_NAMED_MISSING` | Export nomeado não encontrado | MEDIUM |
+
+#### Stub Errors (Geração de Placeholders)
+
+| Código | Descrição | Severidade |
+|--------|-----------|------------|
+| `STUB_GENERATION_INVALID` | Stub gerado com TypeScript inválido | HIGH |
+| `STUB_PROPS_MISMATCH` | Props do stub não combinam com uso | MEDIUM |
+| `STUB_EXPORT_MISSING` | Stub sem export adequado | MEDIUM |
+
+#### WebContainer Errors (Problemas de Runtime)
+
+| Código | Descrição | Severidade |
+|--------|-----------|------------|
+| `WC_BOOT_FAIL` | Falha ao inicializar WebContainer | CRITICAL |
+| `WC_INSTALL_FAIL` | Falha ao instalar dependências | HIGH |
+| `WC_DEVSERVER_FAIL` | Falha ao iniciar dev server | HIGH |
+| `WC_FILE_WRITE_FAIL` | Falha ao escrever arquivo | MEDIUM |
+| `WC_FILE_READ_FAIL` | Falha ao ler arquivo | MEDIUM |
+| `WC_PROCESS_CRASH` | Processo do WebContainer crashou | CRITICAL |
+| `WC_MEMORY_EXCEEDED` | Limite de memória excedido | CRITICAL |
+| `WC_TIMEOUT` | Timeout em operação do WebContainer | HIGH |
+
+### 18.3. Uso no Backend
+
+```typescript
+import { logAgentEvent, LogErrors, errorToLogEntry } from '../_shared/agent-logger.ts';
+
+// Usando atalhos
+await logAgentEvent(LogErrors.llmJsonInvalid('fix-code', 'JSON incompleto', {
+  project_id: 'xxx',
+  model_used: 'gpt-4'
+}));
+
+// Convertendo erro genérico
+try {
+  // ...
+} catch (err) {
+  await logAgentEvent(errorToLogEntry('chat-stream', err));
+}
+```
+
+### 18.4. Uso no Frontend
+
+```typescript
+import { Errors, logError } from '@/lib/errors';
+
+// Criar e logar erro
+const error = Errors.wcBootFail('WebContainer não inicializou');
+logError(error);
+
+// Ou em uma linha
+import { logAndCreateError } from '@/lib/errors';
+logAndCreateError('WC_INSTALL_FAIL', { package: 'react' });
+```
+
+### 18.5. Consultas no `agent_logs`
+
+```sql
+-- Filtrar por categoria (problemas de IA)
+SELECT * FROM agent_logs 
+WHERE error_details->>'category' = 'LLM'
+  AND created_at > NOW() - INTERVAL '1 hour'
+ORDER BY created_at DESC;
+
+-- Filtrar por código específico
+SELECT * FROM agent_logs 
+WHERE error_code = 'LLM_JSON_INVALID'
+ORDER BY created_at DESC
+LIMIT 20;
+
+-- Problemas de WebContainer
+SELECT * FROM agent_logs 
+WHERE error_code LIKE 'WC_%'
+ORDER BY created_at DESC;
+
+-- Ver severidade dos erros
+SELECT 
+  error_code,
+  error_details->>'severity' as severity,
+  COUNT(*) as count
+FROM agent_logs 
+WHERE error_code IS NOT NULL
+GROUP BY error_code, error_details->>'severity'
+ORDER BY count DESC;
+```
+
+### 18.6. Arquivos de Implementação
+
+| Arquivo | Descrição |
+|---------|-----------|
+| `supabase/functions/_shared/error-taxonomy.ts` | Definições de códigos (Backend) |
+| `supabase/functions/_shared/agent-logger.ts` | Helper integrado com taxonomia |
+| `src/lib/errors/error-taxonomy.ts` | Definições de códigos (Frontend) |
+| `src/lib/errors/index.ts` | Re-exports para facilitar imports |
+
+### 18.7. Níveis de Severidade
+
+| Severidade | Impacto | Cor no Console |
+|------------|---------|----------------|
+| `LOW` | Informativo, não impede funcionamento | Cinza |
+| `MEDIUM` | Pode afetar funcionalidade parcialmente | Âmbar |
+| `HIGH` | Impede funcionalidade importante | Vermelho |
+| `CRITICAL` | Sistema não funciona | Vermelho escuro |
+

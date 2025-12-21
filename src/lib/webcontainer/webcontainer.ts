@@ -1,27 +1,84 @@
 import { WebContainer, type FileSystemTree } from '@webcontainer/api';
 
-let webcontainerInstance: WebContainer | null = null;
-let bootPromise: Promise<WebContainer> | null = null;
+// Usar globalThis para persistir entre hot-reloads do Next.js
+declare global {
+  // eslint-disable-next-line no-var
+  var __webcontainerInstance: WebContainer | null;
+  // eslint-disable-next-line no-var
+  var __webcontainerBootPromise: Promise<WebContainer> | null;
+  // eslint-disable-next-line no-var
+  var __webcontainerBootAttempted: boolean;
+}
+
+// Inicializar globais se não existirem
+if (typeof globalThis.__webcontainerInstance === 'undefined') {
+  globalThis.__webcontainerInstance = null;
+}
+if (typeof globalThis.__webcontainerBootPromise === 'undefined') {
+  globalThis.__webcontainerBootPromise = null;
+}
+if (typeof globalThis.__webcontainerBootAttempted === 'undefined') {
+  globalThis.__webcontainerBootAttempted = false;
+}
 
 export async function getWebContainer(): Promise<WebContainer> {
-  if (webcontainerInstance) {
-    return webcontainerInstance;
+  // Verificar se já existe uma instância válida
+  if (globalThis.__webcontainerInstance) {
+    console.log('[WebContainer] ♻️ Reutilizando instância existente');
+    return globalThis.__webcontainerInstance;
   }
 
-  if (bootPromise) {
-    return bootPromise;
+  // Verificar se já está em processo de boot
+  if (globalThis.__webcontainerBootPromise) {
+    console.log('[WebContainer] ⏳ Aguardando boot em progresso...');
+    return globalThis.__webcontainerBootPromise;
   }
 
-  bootPromise = WebContainer.boot().then(instance => {
-    webcontainerInstance = instance;
-    bootPromise = null;
-    return instance;
-  }).catch(err => {
-    bootPromise = null;
-    throw err;
-  });
+  // Se já tentamos boot antes nesta sessão e falhou, não tentar de novo
+  if (globalThis.__webcontainerBootAttempted) {
+    console.warn('[WebContainer] ⚠️ Boot já foi tentado anteriormente. Recarregando página...');
+    if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
+    // Retornar uma promise que nunca resolve (página vai recarregar)
+    return new Promise(() => {});
+  }
 
-  return bootPromise;
+  // Marcar que estamos tentando boot
+  globalThis.__webcontainerBootAttempted = true;
+
+  // Iniciar boot
+  globalThis.__webcontainerBootPromise = WebContainer.boot()
+    .then(instance => {
+      globalThis.__webcontainerInstance = instance;
+      globalThis.__webcontainerBootPromise = null;
+      console.log('[WebContainer] ✅ Instância criada com sucesso');
+      return instance;
+    })
+    .catch(err => {
+      globalThis.__webcontainerBootPromise = null;
+      
+      // Se o erro for "Only a single WebContainer instance can be booted",
+      // significa que já existe uma instância de uma sessão anterior
+      if (err.message?.includes('single WebContainer instance')) {
+        console.warn('[WebContainer] ⚠️ Conflito de instância detectado. Recarregando página...');
+        
+        // Fazer reload automático para limpar o estado
+        if (typeof window !== 'undefined') {
+          // Pequeno delay para o log aparecer
+          setTimeout(() => {
+            window.location.reload();
+          }, 100);
+        }
+        
+        // Retornar uma promise que nunca resolve (página vai recarregar)
+        return new Promise(() => {});
+      }
+      
+      throw err;
+    });
+
+  return globalThis.__webcontainerBootPromise;
 }
 
 export async function mountFiles(
@@ -36,8 +93,22 @@ export async function writeFile(
   path: string,
   contents: string
 ) {
+  // Sanitizar caminho
+  let cleanPath = path.replace(/^\/+/, '').replace(/\\/g, '/');
+  
+  // Remover partes inválidas
+  const parts = cleanPath.split('/').filter(part => 
+    part && part !== '.' && part !== '..'
+  );
+  
+  if (parts.length === 0) {
+    console.warn(`[writeFile] Caminho inválido ignorado: ${path}`);
+    return;
+  }
+  
+  cleanPath = parts.join('/');
+  
   // Criar diretórios pai se não existirem
-  const parts = path.split('/').filter(Boolean);
   if (parts.length > 1) {
     const dirPath = parts.slice(0, -1).join('/');
     try {
@@ -47,7 +118,7 @@ export async function writeFile(
     }
   }
 
-  await container.fs.writeFile(path, contents);
+  await container.fs.writeFile(cleanPath, contents);
 }
 
 export async function readFile(
@@ -254,9 +325,11 @@ export async function startDevServer(
 }
 
 export function destroyWebContainer() {
-  if (webcontainerInstance) {
-    webcontainerInstance.teardown();
-    webcontainerInstance = null;
+  if (globalThis.__webcontainerInstance) {
+    globalThis.__webcontainerInstance.teardown();
+    globalThis.__webcontainerInstance = null;
+    globalThis.__webcontainerBootPromise = null;
+    console.log('[WebContainer] 🗑️ Instância destruída');
   }
 }
 
@@ -267,7 +340,20 @@ export function convertToFileTree(
   const tree: Record<string, unknown> = {};
 
   for (const file of files) {
-    const parts = file.path.split('/').filter(Boolean);
+    // Sanitizar caminho: remover barras iniciais e de escape
+    const cleanPath = file.path.replace(/^\/+/, '').replace(/\\/g, '/');
+    
+    // Filtrar partes inválidas (vazias, '.', '..')
+    const parts = cleanPath.split('/').filter(part => 
+      part && part !== '.' && part !== '..'
+    );
+    
+    // Ignorar arquivos com caminhos inválidos
+    if (parts.length === 0) {
+      console.warn(`[convertToFileTree] Caminho inválido ignorado: ${file.path}`);
+      continue;
+    }
+    
     let current: Record<string, unknown> = tree;
 
     for (let i = 0; i < parts.length - 1; i++) {
@@ -279,6 +365,13 @@ export function convertToFileTree(
     }
 
     const fileName = parts[parts.length - 1];
+    
+    // Validar nome do arquivo
+    if (!fileName || fileName === '.' || fileName === '..') {
+      console.warn(`[convertToFileTree] Nome de arquivo inválido ignorado: ${file.path}`);
+      continue;
+    }
+    
     current[fileName] = {
       file: {
         contents: file.content,
